@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "h.Hchat"
-    compileSdk = 34
+    compileSdk = 37
 
     val autoVersionCode = System.getenv("HCAT_VERSION_CODE")?.toIntOrNull() ?: 1
     val autoVersionName = System.getenv("HCAT_VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.0.0"
@@ -14,7 +14,7 @@ android {
     defaultConfig {
         applicationId = "h.Hchat"
         minSdk = 27
-        targetSdk = 34
+        targetSdk = 37
         versionCode = autoVersionCode
         versionName = autoVersionName
 

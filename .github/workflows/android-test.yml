@@ -47,8 +47,6 @@ jobs:
           echo "HCAT_APK_NAME=${apk_name}" >> "$GITHUB_ENV"
 
           sed -i '/android.aapt2FromMavenOverride/d' gradle.properties
-          sed -i 's/compileSdk = 34/compileSdk = 37/' app/build.gradle.kts
-          sed -i 's/targetSdk = 34/targetSdk = 37/' app/build.gradle.kts
           sed -i 's/isMinifyEnabled = true/isMinifyEnabled = false/' app/build.gradle.kts
           sed -i 's/isShrinkResources = true/isShrinkResources = false/' app/build.gradle.kts
 

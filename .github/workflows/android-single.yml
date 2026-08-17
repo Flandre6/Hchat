@@ -133,8 +133,6 @@ jobs:
         run: |
           set -e
           sed -i '/android.aapt2FromMavenOverride/d' gradle.properties
-          sed -i 's/compileSdk = 34/compileSdk = 37/' app/build.gradle.kts
-          sed -i 's/targetSdk = 34/targetSdk = 37/' app/build.gradle.kts
 
       - name: 还原签名证书
         env:
