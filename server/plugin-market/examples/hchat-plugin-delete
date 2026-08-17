@@ -1,0 +1,49 @@
+#!/bin/sh
+set -eu
+umask 077
+
+PLUGIN_ID=${1:-}
+PASSWORD_FILE=${HCHAT_PLUGIN_MARKET_ADMIN_PASSWORD_FILE:-/etc/hchat-plugin-market/admin.password}
+SERVICE_URL=${HCHAT_PLUGIN_MARKET_URL:-https://hchat.103.97.179.142.sslip.io}
+COOKIE_JAR=$(mktemp)
+
+cleanup() {
+    rm -f "$COOKIE_JAR"
+}
+
+trap cleanup EXIT INT TERM
+
+if ! printf '%s\n' "$PLUGIN_ID" | grep -Eq '^p_[0-9a-f]{32}$'; then
+    echo "用法: hchat-plugin-delete p_加32位小写十六进制插件ID" >&2
+    exit 2
+fi
+
+if [ ! -r "$PASSWORD_FILE" ]; then
+    echo "无法读取管理员密码: $PASSWORD_FILE" >&2
+    exit 1
+fi
+
+if [ -z "$(tr -d '\r\n' < "$PASSWORD_FILE")" ]; then
+    echo "管理员密码为空: $PASSWORD_FILE" >&2
+    exit 1
+fi
+
+python3 - "$PASSWORD_FILE" <<'PY' | curl --fail-with-body --silent --show-error \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -c "$COOKIE_JAR" \
+    --data-binary @- \
+    "${SERVICE_URL%/}/v1/admin/session" >/dev/null
+import json
+import pathlib
+import sys
+
+password = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").strip()
+print(json.dumps({"adminPassword": password}, ensure_ascii=False))
+PY
+
+curl --fail-with-body --silent --show-error \
+    -X DELETE \
+    -b "$COOKIE_JAR" \
+    "${SERVICE_URL%/}/v1/plugins/$PLUGIN_ID"
+printf '\n'

@@ -1,0 +1,79 @@
+name: 安卓测试构建（无 R8）
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 拉取当前频道代码
+        uses: actions/checkout@v4
+
+      - name: 配置 JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: 配置 Gradle 缓存
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-cleanup: always
+          cache-read-only: false
+          validate-wrappers: false
+
+      - name: 配置 Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: 准备测试构建配置
+        run: |
+          set -e
+
+          if [ "${GITHUB_REF_NAME}" = "alt-entry" ]; then
+            apk_name="Hchat-alt-entry-test-signed.apk"
+          else
+            apk_name="Hchat-test-signed.apk"
+          fi
+
+          echo "HCAT_VERSION_NAME=test.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          echo "HCAT_VERSION_CODE=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          echo "HCAT_APK_NAME=${apk_name}" >> "$GITHUB_ENV"
+
+          sed -i '/android.aapt2FromMavenOverride/d' gradle.properties
+          sed -i 's/compileSdk = 34/compileSdk = 37/' app/build.gradle.kts
+          sed -i 's/targetSdk = 34/targetSdk = 37/' app/build.gradle.kts
+          sed -i 's/isMinifyEnabled = true/isMinifyEnabled = false/' app/build.gradle.kts
+          sed -i 's/isShrinkResources = true/isShrinkResources = false/' app/build.gradle.kts
+
+      - name: 还原签名证书
+        env:
+          HCAT_KEYSTORE_BASE64: ${{ secrets.HCAT_KEYSTORE_BASE64 }}
+        run: |
+          set -e
+          if [ -z "$HCAT_KEYSTORE_BASE64" ]; then
+            echo "Missing secret: HCAT_KEYSTORE_BASE64"
+            exit 1
+          fi
+          mkdir -p app/keystore
+          echo "$HCAT_KEYSTORE_BASE64" | base64 -d > app/keystore/。。.jks
+
+      - name: 构建无 R8 测试 APK
+        env:
+          HCAT_STORE_PASSWORD: ${{ secrets.HCAT_STORE_PASSWORD }}
+          HCAT_KEY_ALIAS: ${{ secrets.HCAT_KEY_ALIAS }}
+          HCAT_KEY_PASSWORD: ${{ secrets.HCAT_KEY_PASSWORD }}
+        run: sh ./gradlew :app:assembleRelease --build-cache --parallel --no-watch-fs -x lintVitalRelease
+
+      - name: 上传测试 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.ref_name == 'alt-entry' && 'Hchat-alt-entry-test' || 'Hchat-test' }}
+          path: dist/${{ env.HCAT_APK_NAME }}
+          if-no-files-found: error

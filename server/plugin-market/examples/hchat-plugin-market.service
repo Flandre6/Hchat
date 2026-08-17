@@ -1,0 +1,28 @@
+[Unit]
+Description=Hchat Online Plugin Market
+After=network.target
+
+[Service]
+Type=simple
+User=hchat-market
+Group=hchat-market
+WorkingDirectory=/opt/hchat-plugin-market
+StateDirectory=hchat-plugin-market
+ExecStart=/usr/bin/python3 /opt/hchat-plugin-market/app.py \
+    --host 127.0.0.1 \
+    --port 8765 \
+    --database /var/lib/hchat-plugin-market/plugin-market.db \
+    --migrations /opt/hchat-plugin-market/migrations \
+    --admin-password-file /etc/hchat-plugin-market/admin.password \
+    --trust-proxy
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/hchat-plugin-market /etc/hchat-plugin-market
+
+[Install]
+WantedBy=multi-user.target
