@@ -4,7 +4,7 @@ plugins {
     id("org.jetbrains.compose")
 }
 
-val releaseStoreFile = file("app/keystore/。。.jks")
+val releaseStoreFile = rootProject.file("app/keystore/。。.jks")
 val releaseStorePassword = providers.environmentVariable("HCAT_STORE_PASSWORD").orNull
 val releaseKeyAlias = providers.environmentVariable("HCAT_KEY_ALIAS").orNull
 val releaseKeyPassword = providers.environmentVariable("HCAT_KEY_PASSWORD").orNull
