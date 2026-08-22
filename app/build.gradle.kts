@@ -4,6 +4,15 @@ plugins {
     id("org.jetbrains.compose")
 }
 
+val releaseStoreFile = file("app/keystore/。。.jks")
+val releaseStorePassword = providers.environmentVariable("HCAT_STORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("HCAT_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("HCAT_KEY_PASSWORD").orNull
+val hasReleaseSigning = releaseStoreFile.isFile &&
+    !releaseStorePassword.isNullOrBlank() &&
+    !releaseKeyAlias.isNullOrBlank() &&
+    !releaseKeyPassword.isNullOrBlank()
+
 android {
     namespace = "h.Hchat"
     compileSdk = 37
@@ -24,20 +33,21 @@ android {
     }
 
     signingConfigs {
-        create("。。") {
-            storeFile = file("keystore/。。.jks")
-            storePassword = providers.environmentVariable("HCAT_STORE_PASSWORD").orNull
-                ?: error("缺少 HCAT_STORE_PASSWORD")
-            keyAlias = providers.environmentVariable("HCAT_KEY_ALIAS").orNull
-                ?: error("缺少 HCAT_KEY_ALIAS")
-            keyPassword = providers.environmentVariable("HCAT_KEY_PASSWORD").orNull
-                ?: error("缺少 HCAT_KEY_PASSWORD")
+        if (hasReleaseSigning) {
+            create("。。") {
+                storeFile = releaseStoreFile
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
         }
     }
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("。。")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("。。")
+            }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -80,6 +90,20 @@ android {
             excludes += "clst/core.jcst"
             excludes += "export/**"
             excludes += "jadx/core/deobf/conditions/tlds.txt"
+        }
+    }
+}
+
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+    doFirst {
+        val missing = buildList {
+            if (!releaseStoreFile.isFile) add("app/keystore/。。.jks")
+            if (releaseStorePassword.isNullOrBlank()) add("HCAT_STORE_PASSWORD")
+            if (releaseKeyAlias.isNullOrBlank()) add("HCAT_KEY_ALIAS")
+            if (releaseKeyPassword.isNullOrBlank()) add("HCAT_KEY_PASSWORD")
+        }
+        check(missing.isEmpty()) {
+            "正式构建缺少签名配置: ${missing.joinToString()}。调试构建请运行 :app:assembleDebug"
         }
     }
 }
