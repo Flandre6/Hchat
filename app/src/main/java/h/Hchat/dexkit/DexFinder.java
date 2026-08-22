@@ -33,7 +33,7 @@ import de.robv.android.xposed.XposedBridge;
 
 /**
  * DexFinder - 使用 DexKit 定位微信混淆后的类和方法
- * 适配微信 8.0.49 ~ 8.0.72+
+ * 适配微信 8.0.49 ~ 8.0.77+
  */
 public class DexFinder {
 

@@ -8,6 +8,7 @@ import android.widget.AdapterView;
 import android.widget.BaseAdapter;
 
 import h.Hchat.hooks.api.runtime.WeChatVersionApi;
+import h.Hchat.hooks.api.model.WeChatVersionInfo;
 import h.Hchat.preferences.HchatStorage;
 import h.Hchat.utils.KavaReflector;
 
@@ -32,7 +33,7 @@ import de.robv.android.xposed.XposedBridge;
  * 逐项对应 WeKit 的 WeSettingsInjector.resolveDex()：
  * - Preference.setKey / setTitle / getKey / addPreference
  * - SettingItemClassesProvider / BaseSettingItem / SettingLocation
- * - SettingsUI (旧版) / MainSettingsUI (新版)
+ * - SettingsUI (旧版) / MainSettingsUI (新版，8.0.77 主路径)
  * - SettingGroupAccountInfo 方法（返回 1 的那个）
  */
 public class SettingsDexFinder {
@@ -48,6 +49,7 @@ public class SettingsDexFinder {
     private final ClassLoader classLoader;
     private final SharedPreferences cachePrefs;
     private final String runtimeCacheKey;
+    private final WeChatVersionInfo versionInfo;
 
     // ===== 旧版 Preference 框架 =====
     public Class<?> preferenceClass;
@@ -87,6 +89,7 @@ public class SettingsDexFinder {
         this.dexKit = dexKit;
         this.classLoader = classLoader;
         this.cachePrefs = context != null ? HchatStorage.preferences(context, CACHE_PREFS) : null;
+        this.versionInfo = WeChatVersionApi.build(context, classLoader);
         this.runtimeCacheKey = WeChatVersionApi.buildCacheKey(context, classLoader);
     }
 
@@ -308,6 +311,18 @@ public class SettingsDexFinder {
     // ===== SettingsUI / MainSettingsUI =====
     private void resolveSettingsActivity() {
         if (settingsUIClass != null && mainSettingsUIClass != null) return;
+        // 8.0.49+ uses the modern SettingItem framework.  In 8.0.77 the
+        // legacy SettingsUI class is absent, so resolve the modern entry first.
+        if (versionInfo.isAtLeast(8, 0, 49)) {
+            try {
+                mainSettingsUIClass = KavaReflector.loadClass(
+                        "com.tencent.mm.plugin.setting.ui.setting_new.MainSettingsUI", classLoader);
+                logDetail("MainSettingsUI: OK");
+            } catch (Throwable e) {
+                logDetail("MainSettingsUI: 未找到");
+            }
+            if (mainSettingsUIClass != null) return;
+        }
         try {
             settingsUIClass = KavaReflector.loadClass(
                     "com.tencent.mm.plugin.setting.ui.setting.SettingsUI", classLoader);
