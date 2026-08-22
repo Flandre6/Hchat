@@ -21,6 +21,25 @@ class WeChatVersionInfo(
 
     fun hasTinkerPatch(): Boolean = tinkerId.isNotEmpty() || patchId.isNotEmpty()
 
+    /**
+     * Compares the host WeChat version name without depending on its version code.
+     * Version codes are channel-dependent, while the semantic version is stable
+     * across the arm64 APK used for compatibility checks.
+     */
+    fun isAtLeast(major: Int, minor: Int, patch: Int): Boolean {
+        val parts = versionName.substringBefore('-').split('.')
+        if (parts.size < 3) return false
+        val current = IntArray(3)
+        for (index in current.indices) {
+            current[index] = parts[index].toIntOrNull() ?: return false
+        }
+        val target = intArrayOf(major, minor, patch)
+        for (index in target.indices) {
+            if (current[index] != target[index]) return current[index] > target[index]
+        }
+        return true
+    }
+
     fun displayVersion(): String {
         val version = versionName.ifBlank { "未知" }
         val codePart = if (versionCode > 0L) ".$versionCode" else ""
