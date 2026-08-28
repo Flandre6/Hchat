@@ -30,6 +30,7 @@ import h.Hchat.utils.HLog;
 
 import org.luckypray.dexkit.DexKitBridge;
 
+import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -426,10 +427,54 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                 // 6. 注册并安装所有功能模块
                 featureManager = FeatureRegistry.createDefaultManager();
                 featureManager.installAll(featureContext);
+
+                // 7. 防崩兜底：微信 8.0.76 消息描述文本方法对 null 调 isEmpty() 崩溃（收到特殊小程序电商卡片消息触发）
+                installMsgDescTextFallback(finder);
             });
 
         } catch (Throwable e) {
             HLog.e(TAG + " 初始化失败: " + e, e);
+        }
+    }
+
+    /**
+     * 防崩兜底：微信 8.0.76 的 pt0.r.l(Context, boolean) 存在未初始化局部变量，
+     * 收到特殊小程序电商卡片消息（type 44 + ecsInfo）时 String.isEmpty() 对 null 调用导致崩溃。
+     * 这里 hook 该方法，手动调用原方法并捕获异常，崩溃时兜底返回空串。
+     */
+    private void installMsgDescTextFallback(DexFinder finder) {
+        try {
+            finder.resolveMsgDescTextApi();
+            if (finder.msgDescTextMethods.isEmpty()) {
+                XposedBridge.log("[Hchat:WechatApi] 消息描述防崩兜底未定位到方法");
+                return;
+            }
+            int hooked = 0;
+            for (Method m : finder.msgDescTextMethods) {
+                if (m == null) continue;
+                try {
+                    HookRegistry.get().add(XposedHelpers.findAndHookMethod(
+                            m.getDeclaringClass(), m.getName(), Context.class, boolean.class,
+                            new XC_MethodHook() {
+                                @Override
+                                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                                    try {
+                                        // param.method 是 Member，需转 Method 再手动调用原方法，捕获微信内部 NPE 兜底
+                                        Method original = (Method) param.method;
+                                        param.setResult(original.invoke(param.thisObject, param.args));
+                                    } catch (Throwable t) {
+                                        param.setResult("");
+                                    }
+                                }
+                            }
+                    ));
+                    hooked++;
+                } catch (Throwable ignored) {}
+            }
+            XposedBridge.log("[Hchat:WechatApi] 消息描述防崩兜底已安装: " + hooked + "/"
+                    + finder.msgDescTextMethods.size() + " 个方法");
+        } catch (Throwable e) {
+            HLog.e(TAG + " 消息描述防崩兜底安装失败: " + e.getMessage(), e);
         }
     }
 

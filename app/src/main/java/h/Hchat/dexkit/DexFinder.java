@@ -111,6 +111,9 @@ public class DexFinder {
     public Method sendFileMethod;
     public Method sendFileAttachDirMethod;
     public Method sendFileAttachPathMethod;
+    // 微信消息描述文本方法（签名 (Context, boolean)→String；微信对该类方法内部对 null 调 isEmpty() 会崩，用于防崩兜底）
+    // 跨版本通用：不依赖混淆类名/方法名，按签名定位（各版本这类方法极少，8.0.76 实测仅 3 个）
+    public List<Method> msgDescTextMethods = new java.util.ArrayList<>();
     // XML/AppMsg 原始发送入口
     public Method sendXmlAppMsgMethod;
     public Method appMsgParseMethod;
@@ -1233,6 +1236,34 @@ public class DexFinder {
         } catch (Throwable e) {
             h.Hchat.utils.HLog.e(TAG + " resolveSendXmlApi 失败: " + e.getMessage(), e);
         }
+    }
+
+    public void resolveMsgDescTextApi() {
+        try {
+            if (!msgDescTextMethods.isEmpty()) return;
+            // 跨版本通用：微信消息描述文本方法名稳定为 "l"（各版本 xN0.q/r.l），用 "string" 字符串缩小范围后按签名过滤
+            List<MethodData> methods = dexKit.findMethod(mkMethodUsingStringsAndName("l", "string"));
+            for (MethodData methodData : methods) {
+                try {
+                    Method method = methodData.getMethodInstance(classLoader);
+                    if (!isMsgDescTextMethod(method)) continue;
+                    KavaReflector.accessible(method);
+                    msgDescTextMethods.add(method);
+                } catch (Throwable ignored) {}
+            }
+            if (!msgDescTextMethods.isEmpty()) {
+                logDetail("消息描述文本兜底方法: " + msgDescTextMethods.size() + " 个");
+            }
+        } catch (Throwable e) {
+            h.Hchat.utils.HLog.e(TAG + " resolveMsgDescTextApi 失败: " + e.getMessage(), e);
+        }
+    }
+
+    private boolean isMsgDescTextMethod(Method method) {
+        if (method == null) return false;
+        if (method.getReturnType() != String.class) return false;
+        Class<?>[] params = method.getParameterTypes();
+        return params.length == 2 && params[0] == android.content.Context.class && params[1] == boolean.class;
     }
 
     private void resolveAppMsgParseMethod(Class<?> appMsgClass) {
