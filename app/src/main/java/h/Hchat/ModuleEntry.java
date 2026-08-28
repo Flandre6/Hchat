@@ -438,7 +438,7 @@ public class ModuleEntry implements IXposedHookLoadPackage {
     }
 
     /**
-     * 防崩兜底：微信 8.0.76 的 pt0.r.l(Context, boolean) 存在未初始化局部变量，
+     * 防崩兜底：微信消息描述链存在对 null 调用 String.isEmpty() 的路径，
      * 收到特殊小程序电商卡片消息（type 44 + ecsInfo）时 String.isEmpty() 对 null 调用导致崩溃。
      * 这里 hook 该方法，手动调用原方法并捕获异常，崩溃时兜底返回空串。
      */
@@ -453,21 +453,16 @@ public class ModuleEntry implements IXposedHookLoadPackage {
             for (Method m : finder.msgDescTextMethods) {
                 if (m == null) continue;
                 try {
-                    HookRegistry.get().add(XposedHelpers.findAndHookMethod(
-                            m.getDeclaringClass(), m.getName(), Context.class, boolean.class,
-                            new XC_MethodHook() {
+                    HookRegistry.get().hook(m, new XC_MethodHook() {
                                 @Override
-                                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                                    try {
-                                        // param.method 是 Member，需转 Method 再手动调用原方法，捕获微信内部 NPE 兜底
-                                        Method original = (Method) param.method;
-                                        param.setResult(original.invoke(param.thisObject, param.args));
-                                    } catch (Throwable t) {
+                                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                                    if (param.getThrowable() != null) {
+                                        XposedBridge.log("[Hchat:WechatApi] 消息描述异常已兜底: " + param.getThrowable());
+                                        param.setThrowable(null);
                                         param.setResult("");
                                     }
                                 }
-                            }
-                    ));
+                            });
                     hooked++;
                 } catch (Throwable ignored) {}
             }

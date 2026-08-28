@@ -1241,15 +1241,33 @@ public class DexFinder {
     public void resolveMsgDescTextApi() {
         try {
             if (!msgDescTextMethods.isEmpty()) return;
-            // 跨版本通用：微信消息描述文本方法名稳定为 "l"（各版本 xN0.q/r.l），用 "string" 字符串缩小范围后按签名过滤
+            // 跨版本通用：微信消息描述文本方法名稳定为 "l"。参数在 8.0.77
+            // 的混淆链中发生过变化，因此只约束返回 String，并在安装阶段按真实 Method Hook。
             List<MethodData> methods = dexKit.findMethod(mkMethodUsingStringsAndName("l", "string"));
+            List<Method> broadCandidates = new ArrayList<>();
             for (MethodData methodData : methods) {
                 try {
                     Method method = methodData.getMethodInstance(classLoader);
                     if (!isMsgDescTextMethod(method)) continue;
                     KavaReflector.accessible(method);
-                    msgDescTextMethods.add(method);
+                    // The 8.0.77 crash trace identifies zv0.r.l. Prefer this
+                    // exact owner; only fall back to a small set of obfuscated
+                    // owners when the class name changes in a future build.
+                    if ("zv0.r".equals(method.getDeclaringClass().getName())) {
+                        msgDescTextMethods.add(method);
+                    } else {
+                        broadCandidates.add(method);
+                    }
                 } catch (Throwable ignored) {}
+            }
+            if (msgDescTextMethods.isEmpty()) {
+                for (Method method : broadCandidates) {
+                    String owner = method.getDeclaringClass().getName();
+                    if (owner.startsWith("zv") || owner.contains("msg") || owner.contains("chat")) {
+                        msgDescTextMethods.add(method);
+                        if (msgDescTextMethods.size() >= 4) break;
+                    }
+                }
             }
             if (!msgDescTextMethods.isEmpty()) {
                 logDetail("消息描述文本兜底方法: " + msgDescTextMethods.size() + " 个");
@@ -1263,7 +1281,9 @@ public class DexFinder {
         if (method == null) return false;
         if (method.getReturnType() != String.class) return false;
         Class<?>[] params = method.getParameterTypes();
-        return params.length == 2 && params[0] == android.content.Context.class && params[1] == boolean.class;
+        if (params.length == 0 || params.length > 5) return false;
+        String name = method.getName();
+        return "l".equals(name) || "q".equals(name) || "r".equals(name);
     }
 
     private void resolveAppMsgParseMethod(Class<?> appMsgClass) {

@@ -118,9 +118,20 @@ public final class WeChatDatabaseListenerApi {
 
     public boolean isOperational() {
         Class<?> wrapperClass = dexFinder != null ? dexFinder.sqliteDbWrapperClass : null;
-        return wrapperClass != null
-                && wrapperClass == hookedWrapperClass
-                && !hookedWrapperInsertMethods.isEmpty();
+        // 8.0.77 may inline/rename the WCDB wrapper while the public SQLiteDatabase
+        // methods remain stable.  A successful insert hook on any database class is
+        // sufficient for change delivery; requiring the obfuscated wrapper caused
+        // false negatives (databaseHooks>0, wrapperInserts=0).
+        return (!hookedWrapperInsertMethods.isEmpty()
+                || hasAnyInsertHook())
+                && (wrapperClass == null || wrapperClass == hookedWrapperClass);
+    }
+
+    private boolean hasAnyInsertHook() {
+        for (Method method : hookedMethods) {
+            if (method != null && DatabaseChange.INSERT.equals(operationOf(method, true))) return true;
+        }
+        return false;
     }
 
     public Subscription subscribe(Listener listener) {

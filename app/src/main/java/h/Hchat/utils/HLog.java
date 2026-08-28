@@ -20,4 +20,10 @@ public final class HLog {
         }
         XposedBridge.log(new RuntimeException(message, throwable));
     }
+
+    public static void w(String message) {
+        if (message != null && !message.isEmpty()) {
+            XposedBridge.log("[Hchat:WARN] " + message);
+        }
+    }
 }

@@ -202,9 +202,11 @@ private class HomeTextColorRuntime(
                 "局部"
             )
         }
-        return conversationInstalled && contactsInstalled && preferenceInstalled &&
-            layoutInflaterInstalled &&
-            recyclerInstalled && recyclerPayloadInstalled
+        // A host update can remove one adapter path while leaving the others
+        // functional. Treat the feature as installed when at least one compatible
+        // path is active; otherwise the scheduler retries forever and spams logs.
+        return conversationInstalled || contactsInstalled || preferenceInstalled ||
+            layoutInflaterInstalled || recyclerInstalled || recyclerPayloadInstalled
     }
 
     private fun locateConversationGetViews(
