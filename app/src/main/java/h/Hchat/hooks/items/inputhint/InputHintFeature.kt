@@ -118,7 +118,8 @@ private class InputHintRuntime(
 
     fun installStatistics(): OutgoingMessageStatsRepository.Subscription? {
         if (!OutgoingMessageStatsRepository.install(logger)) {
-            logger("消息变更 API 未就绪，发送统计暂不可用", null)
+            // This is an optional enhancement.  Do not surface a RuntimeException-like
+            // error during feature startup when the host database API is still resolving.
             return null
         }
         return OutgoingMessageStatsRepository.subscribe(::refreshAttachedInputs)

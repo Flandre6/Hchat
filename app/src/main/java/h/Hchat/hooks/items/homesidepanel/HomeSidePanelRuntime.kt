@@ -135,7 +135,9 @@ internal class HomeSidePanelRuntime(private val context: FeatureContext) {
         private val overlay = DrawerOverlay(activity)
         private val panel = ComposeView(activity)
         private val owner = PanelComposeOwner()
-        private val data = HomeSidePanelDataRepository(activity)
+        // Weather DB is packaged in Hchat assets, while preferences/profile belong
+        // to the host WeChat context.
+        private val data = HomeSidePanelDataRepository(activity, context.moduleContext())
         private var attached = false
         private var drawerWidth = 1f
         private var progress = 0f

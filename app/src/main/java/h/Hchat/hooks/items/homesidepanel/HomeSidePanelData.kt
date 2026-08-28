@@ -50,7 +50,10 @@ internal data class HomeSidePanelHitokotoSnapshot(
     fun displayText(): String = if (source.isBlank()) text else "$text\n—— $source"
 }
 
-internal class HomeSidePanelDataRepository(context: Context) {
+internal class HomeSidePanelDataRepository(
+    context: Context,
+    private val assetContext: Context = context
+) {
     private val appContext = context.applicationContext ?: context
     private val prefs = HomeSidePanelSettings.preferences(appContext)
     private val executor = Executors.newFixedThreadPool(2) { runnable ->
@@ -101,8 +104,8 @@ internal class HomeSidePanelDataRepository(context: Context) {
         executor.execute {
             if (closed) return@execute
             val city = runCatching {
-                HomeSidePanelCityIndex(appContext).resolve(profile?.province.orEmpty(), profile?.city.orEmpty())
-            }.onFailure { HLog.e("$TAG 城市索引读取失败: ${it.message}", it) }
+                HomeSidePanelCityIndex(assetContext).resolve(profile?.province.orEmpty(), profile?.city.orEmpty())
+            }.onFailure { HLog.w("$TAG 城市索引不可用，回退默认城市: ${it.message}") }
                 .getOrDefault(DEFAULT_CITY)
             requestWeather(city, cached, callback)
         }
