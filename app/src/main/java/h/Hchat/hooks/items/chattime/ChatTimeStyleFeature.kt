@@ -142,6 +142,10 @@ private class ChatTimeStyleRuntime(
     private fun applyStyle(view: TextView, bound: BoundTime, mode: String) {
         when (mode) {
             ChatTimeStyleSettings.MODE_HIDDEN -> view.visibility = View.GONE
+            ChatTimeStyleSettings.MODE_EVERY -> {
+                view.visibility = View.VISIBLE
+                view.text = if (bound.createTime > 0L) formatTime(bound.createTime) else bound.nativeText
+            }
             ChatTimeStyleSettings.MODE_CUSTOM -> {
                 view.visibility = bound.nativeVisibility
                 view.text = if (bound.nativeVisibility == View.VISIBLE && bound.createTime > 0L) {

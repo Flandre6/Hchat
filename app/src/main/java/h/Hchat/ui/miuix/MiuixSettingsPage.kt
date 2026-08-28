@@ -17699,12 +17699,14 @@ private fun ChatTimeStyleMiuixPage(
 private fun chatTimeModeChoices(): List<PopupChoice<String>> = listOf(
     PopupChoice("微信原样", ChatTimeStyleSettings.MODE_ORIGINAL),
     PopupChoice("自定义", ChatTimeStyleSettings.MODE_CUSTOM),
-    PopupChoice("隐藏", ChatTimeStyleSettings.MODE_HIDDEN)
+    PopupChoice("隐藏", ChatTimeStyleSettings.MODE_HIDDEN),
+    PopupChoice("每条显示", ChatTimeStyleSettings.MODE_EVERY)
 )
 
 private fun chatTimeModeLabel(mode: String): String = when (mode) {
     ChatTimeStyleSettings.MODE_CUSTOM -> "使用自定义时间格式"
     ChatTimeStyleSettings.MODE_HIDDEN -> "隐藏微信原生聊天时间"
+    ChatTimeStyleSettings.MODE_EVERY -> "每条消息显示完整时间"
     else -> "保持微信原样"
 }
 
