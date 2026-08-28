@@ -446,6 +446,7 @@ import h.Hchat.hooks.items.scheduledtask.ScheduledTaskRuntimeCoordinator
 import h.Hchat.hooks.items.scheduledtask.ScheduledTaskSettings
 import h.Hchat.hooks.items.selectedmessages.SelectedMessageSnapshot
 import h.Hchat.hooks.items.selectedmessages.SelectedMessagesFeature
+import h.Hchat.hooks.items.securemessage.SecureMessageSettings
 import h.Hchat.hooks.items.selectedmessages.SelectedMessagesRuntimeCoordinator
 import h.Hchat.hooks.items.selectedmessages.SelectedMessagesSettings
 import h.Hchat.hooks.items.settings.PluginAgentEntryProvider
@@ -4492,6 +4493,7 @@ private fun FeatureSettingsPage(
         MultiRecallFeature.ID -> MultiRecallMiuixPage(context, provider, onBack)
         MessageForwardFeature.ID -> MessageForwardMiuixPage(context, provider, onBack)
         SelectedMessagesFeature.ID -> SelectedMessagesMiuixPage(context, provider, onBack)
+        SecureMessageSettings.SEND_ID, SecureMessageSettings.ANTI_ID -> SecureMessageMiuixPage(context, provider, onBack)
         CallMediaLimitFeature.ID -> CallMediaLimitMiuixPage(context, provider, onBack)
         CallRingtoneBlockFeature.ID -> CallRingtoneBlockMiuixPage(context, provider, onBack)
         DisableHotUpdateFeature.ID -> DisableHotUpdateMiuixPage(context, provider, onBack)
