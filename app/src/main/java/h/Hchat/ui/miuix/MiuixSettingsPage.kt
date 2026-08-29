@@ -17670,7 +17670,9 @@ private fun ChatTimeStyleMiuixPage(
                             sp.edit().putString(ChatTimeStyleSettings.KEY_MODE, mode).apply()
                         }
                     )
-                    if (mode == ChatTimeStyleSettings.MODE_CUSTOM) {
+                    if (mode == ChatTimeStyleSettings.MODE_CUSTOM ||
+                        mode == ChatTimeStyleSettings.MODE_EVERY
+                    ) {
                         InsetDivider()
                         InputRow(
                             title = "时间格式",
@@ -17693,13 +17695,15 @@ private fun ChatTimeStyleMiuixPage(
 private fun chatTimeModeChoices(): List<PopupChoice<String>> = listOf(
     PopupChoice("微信原样", ChatTimeStyleSettings.MODE_ORIGINAL),
     PopupChoice("自定义", ChatTimeStyleSettings.MODE_CUSTOM),
+    PopupChoice("每条消息都显示", ChatTimeStyleSettings.MODE_EVERY),
     PopupChoice("隐藏", ChatTimeStyleSettings.MODE_HIDDEN)
 )
 
 private fun chatTimeModeLabel(mode: String): String = when (mode) {
-    ChatTimeStyleSettings.MODE_CUSTOM -> "使用自定义时间格式"
+    ChatTimeStyleSettings.MODE_CUSTOM -> "自定义格式（微信原生间隔）"
+    ChatTimeStyleSettings.MODE_EVERY -> "每条消息都显示时间"
     ChatTimeStyleSettings.MODE_HIDDEN -> "隐藏微信原生聊天时间"
-    else -> "保持微信原样"
+    else -> "保持微信原样（间隔显示）"
 }
 
 @Composable

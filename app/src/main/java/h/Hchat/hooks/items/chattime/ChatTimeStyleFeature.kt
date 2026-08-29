@@ -2,6 +2,7 @@ package h.Hchat.hooks.items.chattime
 
 import android.content.SharedPreferences
 import android.view.View
+import android.widget.AbsListView
 import android.widget.TextView
 import de.robv.android.xposed.XC_MethodHook
 import h.Hchat.dexkit.DexMethodCache
@@ -73,8 +74,10 @@ private class ChatTimeStyleRuntime(
     private val timeFieldCache = ConcurrentHashMap<Class<*>, Field>()
     private val unsupportedTimeHolders = ConcurrentHashMap.newKeySet<Class<*>>()
     private val bindings = Collections.synchronizedMap(WeakHashMap<TextView, BoundTime>())
+    private val lastShownByList = Collections.synchronizedMap(WeakHashMap<View, Long>())
     private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == ChatTimeStyleSettings.KEY_MODE || key == ChatTimeStyleSettings.KEY_TIME_FORMAT) {
+            lastShownByList.clear()
             refreshAttachedTimes()
         }
     }
@@ -122,8 +125,9 @@ private class ChatTimeStyleRuntime(
         val root = findRootView(holder) ?: return
         val taggedHolder = root.tag ?: holder
         val timeView = findTimeView(taggedHolder) ?: findTimeView(holder) ?: return
-        if (mode == ChatTimeStyleSettings.MODE_ORIGINAL) {
+        if (mode == ChatTimeStyleSettings.MODE_HIDDEN) {
             bindings.remove(timeView)
+            timeView.visibility = View.GONE
             return
         }
         val createTime = resolveNativeMessage(args?.getOrNull(1))
@@ -135,14 +139,55 @@ private class ChatTimeStyleRuntime(
             nativeText = timeView.text?.toString().orEmpty(),
             nativeVisibility = timeView.visibility
         )
+        when (mode) {
+            ChatTimeStyleSettings.MODE_ORIGINAL -> applyNativeInterval(timeView, root, bound, custom = false)
+            ChatTimeStyleSettings.MODE_CUSTOM -> applyNativeInterval(timeView, root, bound, custom = true)
+            else -> { // MODE_EVERY：每条消息都显示，支持自定义格式
+                bindings[timeView] = bound
+                timeView.visibility = bound.nativeVisibility
+                timeView.text = if (bound.nativeVisibility == View.VISIBLE && bound.createTime > 0L) {
+                    formatTime(bound.createTime)
+                } else {
+                    bound.nativeText
+                }
+            }
+        }
+    }
+
+    private fun applyNativeInterval(timeView: TextView, root: View, bound: BoundTime, custom: Boolean) {
+        val listRoot = findListRoot(root)
+        val lastShown = synchronized(lastShownByList) { lastShownByList[listRoot] ?: 0L }
+        // 微信原生间隔效果：距上一条已显示的时间不足 5 分钟时隐藏，避免每条消息都显示时间
+        if (lastShown > 0L && bound.createTime > 0L &&
+            bound.createTime - lastShown < ChatTimeStyleSettings.NATIVE_INTERVAL_MS
+        ) {
+            bindings.remove(timeView)
+            timeView.visibility = View.GONE
+            return
+        }
+        if (bound.createTime > 0L) synchronized(lastShownByList) { lastShownByList[listRoot] = bound.createTime }
         bindings[timeView] = bound
-        applyStyle(timeView, bound, mode)
+        timeView.visibility = bound.nativeVisibility
+        timeView.text = if (custom && bound.nativeVisibility == View.VISIBLE && bound.createTime > 0L) {
+            formatTime(bound.createTime)
+        } else {
+            bound.nativeText
+        }
+    }
+
+    private fun findListRoot(view: View): View {
+        var v: View? = view
+        while (v != null) {
+            if (v is AbsListView || v.javaClass.name.contains("RecyclerView")) return v
+            v = v.parent as? View
+        }
+        return view
     }
 
     private fun applyStyle(view: TextView, bound: BoundTime, mode: String) {
         when (mode) {
             ChatTimeStyleSettings.MODE_HIDDEN -> view.visibility = View.GONE
-            ChatTimeStyleSettings.MODE_CUSTOM -> {
+            ChatTimeStyleSettings.MODE_EVERY, ChatTimeStyleSettings.MODE_CUSTOM -> {
                 view.visibility = bound.nativeVisibility
                 view.text = if (bound.nativeVisibility == View.VISIBLE && bound.createTime > 0L) {
                     formatTime(bound.createTime)
