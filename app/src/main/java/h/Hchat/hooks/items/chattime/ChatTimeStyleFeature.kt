@@ -192,7 +192,14 @@ private class ChatTimeStyleRuntime(
                 if (view.parent == null) return@post
                 when (mode) {
                     ChatTimeStyleSettings.MODE_HIDDEN -> view.visibility = View.GONE
-                    ChatTimeStyleSettings.MODE_CUSTOM -> applyStyle(view, bound, format = true)
+                    ChatTimeStyleSettings.MODE_ORIGINAL,
+                    ChatTimeStyleSettings.MODE_CUSTOM -> applyGroupedStyle(
+                        view,
+                        view,
+                        bound,
+                        mode == ChatTimeStyleSettings.MODE_CUSTOM
+                    )
+                    ChatTimeStyleSettings.MODE_EVERY -> applyStyle(view, bound, format = true)
                     else -> applyStyle(view, bound, format = false)
                 }
             }
