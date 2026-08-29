@@ -455,7 +455,9 @@ class ScriptPluginBridge internal constructor(
     ): XC_MethodHook.Unhook {
         val unhook = HookRegistry.get().hook(member, object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
-                callback.accept(param)
+                ScriptPluginRuntime.invokeScriptHook(pluginId) {
+                    callback.accept(param)
+                }
             }
         })
         rememberHook(pluginId, unhook)
@@ -474,7 +476,9 @@ class ScriptPluginBridge internal constructor(
     ): XC_MethodHook.Unhook {
         val unhook = HookRegistry.get().hook(member, object : XC_MethodHook() {
             override fun afterHookedMethod(param: MethodHookParam) {
-                callback.accept(param)
+                ScriptPluginRuntime.invokeScriptHook(pluginId) {
+                    callback.accept(param)
+                }
             }
         })
         rememberHook(pluginId, unhook)
@@ -493,7 +497,9 @@ class ScriptPluginBridge internal constructor(
     ): XC_MethodHook.Unhook {
         val unhook = HookRegistry.get().hook(member, object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
-                param.result = callback.apply(param)
+                ScriptPluginRuntime.invokeScriptHook(pluginId) {
+                    param.result = callback.apply(param)
+                }
             }
         })
         rememberHook(pluginId, unhook)

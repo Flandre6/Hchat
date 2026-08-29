@@ -80,6 +80,7 @@ object ScriptPluginRuntime {
     private const val FINDER_MEDIA_DOWNLOAD_TASK_DEDUP_WINDOW_MS = 10 * 60_000L
     private const val FINDER_MEDIA_DOWNLOAD_TASK_RUNNING = Long.MIN_VALUE
     private const val SNS_PREPARE_QUEUE_CAPACITY = 32
+    private const val SCRIPT_HOOK_BUSY_LOG_COOLDOWN_MS = 10_000L
     private const val PROCESS_MAIN = "main"
     private const val PROCESS_APPBRAND = "appbrand"
     private val AGENT_TRANSACTION_DIRECTORY = Regex(
@@ -107,6 +108,7 @@ object ScriptPluginRuntime {
     private val reloadTasks = ConcurrentHashMap<String, Runnable>()
     private val interpreterLocks = WeakHashMap<Interpreter, ReentrantLock>()
     private val sendButtonDiagnosticLogAt = ConcurrentHashMap<String, Long>()
+    private val scriptHookBusyLogAt = ConcurrentHashMap<String, Long>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val protobufListenerLock = Any()
     private val protobufListenerRegistered = AtomicBoolean(false)
@@ -1651,6 +1653,7 @@ object ScriptPluginRuntime {
             eval(
                 """
                 import de.robv.android.xposed.XC_MethodHook;
+                import de.robv.android.xposed.XC_MethodHook.MethodHookParam;
                 import de.robv.android.xposed.XposedBridge;
                 import de.robv.android.xposed.XposedHelpers;
                 import h.Hchat.dexkit.DexBridgeHolder;
@@ -2090,6 +2093,38 @@ object ScriptPluginRuntime {
     private inline fun <T> withInterpreterLock(interpreter: Interpreter, block: () -> T): T {
         val lock = interpreterLock(interpreter)
         lock.lock()
+        return try {
+            block()
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    /**
+     * Executes a script-registered Xposed hook while sharing the interpreter lock used by
+     * lifecycle/callback dispatch. UI hooks must never wait for a background script callback:
+     * a plugin may perform network I/O, and waiting here would block RecyclerView binding and
+     * eventually trigger an input-dispatch ANR in WeChat.
+     */
+    internal fun <T> invokeScriptHook(pluginId: String?, block: () -> T): T? {
+        val normalizedId = pluginId?.trim().orEmpty()
+        if (normalizedId.isEmpty()) return block()
+        val loaded = loadedPlugins[normalizedId] ?: return null
+        val lock = interpreterLock(loaded.interpreter)
+        val onMainThread = Looper.myLooper() === Looper.getMainLooper()
+        if (onMainThread && !lock.tryLock()) {
+            val now = SystemClock.elapsedRealtime()
+            val previous = scriptHookBusyLogAt[normalizedId]
+            if (previous == null || now - previous >= SCRIPT_HOOK_BUSY_LOG_COOLDOWN_MS) {
+                scriptHookBusyLogAt[normalizedId] = now
+                h.Hchat.utils.HLog.e(
+                    "$TAG 跳过繁忙的主线程脚本Hook: plugin=$normalizedId，" +
+                        "避免等待后台脚本/网络请求导致ANR"
+                )
+            }
+            return null
+        }
+        if (!onMainThread) lock.lock()
         return try {
             block()
         } finally {
