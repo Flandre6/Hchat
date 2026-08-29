@@ -3,6 +3,7 @@ package h.Hchat.hooks.core
 import h.Hchat.hooks.api.core.WechatApiFeature
 import h.Hchat.hooks.items.audiotransform.AudioTransformFeature
 import h.Hchat.hooks.items.antirecall.AntiRecallFeature
+import h.Hchat.hooks.items.antireadreceipts.AntiReadReceiptsFeature
 import h.Hchat.hooks.items.atallnotify.AtAllNotificationBlockFeature
 import h.Hchat.hooks.items.automessageforward.AutoMessageForwardFeature
 import h.Hchat.hooks.items.autoreply.AutoReplyFeature
@@ -109,6 +110,7 @@ object FeatureRegistry {
             .register(AutoTransferFeature())
             .register(FakeWalletBalanceFeature())
             .register(AntiRecallFeature())
+            .register(AntiReadReceiptsFeature())
             .register(MultiRecallFeature())
             .register(DisableHotUpdateFeature())
             .register(ProfileIdFeature())
