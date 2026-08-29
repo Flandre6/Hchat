@@ -25,6 +25,7 @@ import java.util.IdentityHashMap
 import java.util.Locale
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.abs
 
 class ChatTimeStyleFeature : BaseFeature() {
     private var runtime: ChatTimeStyleRuntime? = null
@@ -163,7 +164,7 @@ private class ChatTimeStyleRuntime(
     ) {
         val groupingRoot = findGroupingRoot(itemRoot)
         val previous = groupingRoot?.let { synchronized(groupLastTimes) { groupLastTimes[it] ?: 0L } } ?: 0L
-        if (previous > 0L && bound.createTime > 0L && bound.createTime - previous < GROUP_INTERVAL_MS) {
+        if (previous > 0L && bound.createTime > 0L && abs(bound.createTime - previous) < GROUP_INTERVAL_MS) {
             bindings.remove(view)
             view.visibility = View.GONE
             return
