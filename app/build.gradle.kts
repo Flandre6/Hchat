@@ -102,6 +102,7 @@ dependencies {
     implementation(compose.runtime)
     implementation(compose.foundation)
     implementation(compose.ui)
+    implementation("androidx.compose.material3:material3:1.5.0-alpha26")
     implementation("androidx.lifecycle:lifecycle-runtime:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel:2.8.7")
     implementation("androidx.savedstate:savedstate:1.2.1")

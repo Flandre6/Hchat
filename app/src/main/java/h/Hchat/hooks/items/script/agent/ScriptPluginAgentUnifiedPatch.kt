@@ -152,6 +152,8 @@ object ScriptPluginAgentUnifiedPatch {
 
     private fun applyHunks(path: String, source: String, hunks: List<Hunk>): String {
         val text = parseTextLines(source)
+        // 大文件（>500 行）禁用模糊空白匹配，避免 hunk 错位产生异常大 diff
+        val largeFile = text.lines.size > 500
         var cursor = 0
         var lineDelta = 0
         hunks.forEachIndexed { hunkIndex, hunk ->
@@ -163,10 +165,10 @@ object ScriptPluginAgentUnifiedPatch {
                 hunk.endOfFile -> findEndMatch(text.lines, oldLines)
                 oldLines.isEmpty() -> expected?.coerceAtMost(text.lines.size) ?: cursor.coerceAtMost(text.lines.size)
                 expected != null && matchesAt(text.lines, oldLines, expected) -> expected
-                else -> findMatch(text.lines, oldLines, cursor)
+                else -> findMatch(text.lines, oldLines, cursor, strict = largeFile)
             }
             require(position >= 0) {
-                "第 ${hunkIndex + 1} 个补丁区块在 $path 中找不到匹配上下文，请重新读取文件"
+                "第 ${hunkIndex + 1} 个补丁区块在 $path 中找不到匹配上下文，请重新读取文件后缩小补丁范围"
             }
             val newLines = replacementLines(text.lines, position, hunk.lines)
             repeat(oldLines.size) { text.lines.removeAt(position) }
@@ -189,13 +191,15 @@ object ScriptPluginAgentUnifiedPatch {
         return TextLines(lines, trailing, separator)
     }
 
-    private fun findMatch(lines: List<String>, expected: List<String>, start: Int): Int {
+    private fun findMatch(lines: List<String>, expected: List<String>, start: Int, strict: Boolean = false): Int {
         if (expected.isEmpty()) return start.coerceIn(0, lines.size)
         val max = lines.size - expected.size
         if (max < 0) return -1
         for (index in start.coerceAtLeast(0)..max) {
             if (matchesAt(lines, expected, index)) return index
         }
+        // 大文件严格模式禁用模糊空白匹配，避免错位
+        if (strict) return -1
         return findUniqueWhitespaceMatch(lines, expected, start.coerceAtLeast(0), max)
     }
 

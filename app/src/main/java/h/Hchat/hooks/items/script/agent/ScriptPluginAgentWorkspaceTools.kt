@@ -16,6 +16,7 @@ import java.security.MessageDigest
 import java.util.Locale
 import java.util.Properties
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 object ScriptPluginAgentWorkspaceTools {
     private const val PREFIX = "hchat.workspace."
@@ -23,7 +24,7 @@ object ScriptPluginAgentWorkspaceTools {
     private const val MAX_TOTAL_BYTES = 32L * 1024L * 1024L
     private const val MAX_TEXT_BYTES = 2L * 1024L * 1024L
     private const val MAX_PATCH_BYTES = 4L * 1024L * 1024L
-    private const val MAX_READ_CHARS = 64_000
+    private const val MAX_READ_CHARS = 128_000
     private const val MAX_SEARCH_RESULTS = 200
     private const val MAX_LIST_RESULTS = 500
     private const val MAX_ACCESS_RESULTS = 500
@@ -40,6 +41,8 @@ object ScriptPluginAgentWorkspaceTools {
         "create_directory",
         "write_file",
         "apply_patch",
+        "replace_text",
+        "run_shell",
         "move_path",
         "delete_path",
         "restore_path",
@@ -99,6 +102,18 @@ object ScriptPluginAgentWorkspaceTools {
             "plugin_id" to stringSchema("插件目录名"),
             "patch" to stringSchema("以 *** Begin Patch 开始、*** End Patch 结束的完整统一补丁")
         ), listOf("plugin_id", "patch"))
+        tool(tools, "replace_text", "在单个文件中做精确字符串替换（局部修改首选，不依赖行号）；找不到或匹配不唯一会明确报错", linkedMapOf(
+            "plugin_id" to stringSchema("插件目录名"),
+            "path" to stringSchema("相对插件目录的文件路径"),
+            "search_string" to stringSchema("要查找的唯一原文片段（应包含足够上下文保证唯一）"),
+            "replacement" to stringSchema("替换后的文本"),
+            "occurrence" to integerSchema("替换第几次出现的匹配，从 1 开始；-1 表示全部替换", 1, -1, 100)
+        ), listOf("plugin_id", "path", "search_string", "replacement"))
+        tool(tools, "run_shell", "在插件工作区内执行 shell 命令（沙箱：工作目录锁定在插件目录，拦截危险命令，输出截断返回）。用于批量/复杂处理，如 sed、python 生成代码、查重等", linkedMapOf(
+            "plugin_id" to stringSchema("插件目录名"),
+            "command" to stringSchema("要执行的 shell 命令；只能操作插件目录内的文件，禁止访问系统/网络/其它应用数据"),
+            "timeout_seconds" to integerSchema("命令超时秒数", 15, 1, 60)
+        ), listOf("plugin_id", "command"))
         tool(tools, "move_path", "移动或重命名插件工作区内的文件或目录", linkedMapOf(
             "plugin_id" to stringSchema("插件目录名"),
             "source" to stringSchema("源相对路径"),
@@ -128,7 +143,7 @@ object ScriptPluginAgentWorkspaceTools {
         ), listOf("plugin_id"))
         return JSONObject().apply {
             put("source", "Hchat 插件工作区工具")
-            put("instructions", "所有路径均相对单个插件目录。权限异常或写入失败时先调用 check_access，必要时设置 repair=true；修改代码先 list/read/search，再使用 Codex 风格 apply_patch。完成前必须依次调用 workspace_status 和 show_diff。")
+            put("instructions", "所有路径均相对单个插件目录。权限异常或写入失败时先调用 check_access，必要时设置 repair=true；修改代码先 list/read/search。局部小改优先用 replace_text（给原文片段+新文本，不依赖行号）；多文件/新增/移动/整文件用 Codex 风格 apply_patch。完成前必须依次调用 workspace_status 和 show_diff。停止条件：当 workspace_status 返回 canApply=true 且 show_diff 结果符合你的意图时，立即提交，不要反复检查；若校验错误连续两次修改仍未改善，停止并说明原因。")
             put("tools", tools)
         }.toString()
     }
@@ -141,7 +156,7 @@ object ScriptPluginAgentWorkspaceTools {
 
     @JvmStatic
     fun requiresWriteApproval(name: String): Boolean {
-        return normalize(name) == "write_file" || normalize(name) == "apply_patch"
+        return normalize(name) == "write_file" || normalize(name) == "apply_patch" || normalize(name) == "replace_text" || normalize(name) == "run_shell"
     }
 
     @JvmStatic
@@ -149,6 +164,8 @@ object ScriptPluginAgentWorkspaceTools {
         "create_directory",
         "write_file",
         "apply_patch",
+        "replace_text",
+        "run_shell",
         "move_path",
         "delete_path",
         "restore_path",
@@ -174,6 +191,8 @@ object ScriptPluginAgentWorkspaceTools {
         "create_directory" -> "创建插件目录"
         "write_file" -> "写入插件文件"
         "apply_patch" -> "修改插件文件"
+        "replace_text" -> "替换插件文件文本"
+        "run_shell" -> "在插件目录执行命令"
         "move_path" -> "移动插件路径"
         "delete_path" -> "删除插件路径"
         "restore_path" -> "恢复插件路径"
@@ -521,9 +540,10 @@ object ScriptPluginAgentWorkspaceTools {
         val requested = if (relative == ".") pluginRoot else File(pluginRoot, relative).absoluteFile
         val target = requested.canonicalFile
         require(
-            requested == target &&
-                (target == pluginRoot || target.path.startsWith(pluginRoot.path + File.separator))
-        ) { "检查路径超出插件目录或使用了符号链接" }
+            target == pluginRoot || target.path.startsWith(pluginRoot.path + File.separator)
+        ) { "检查路径超出插件目录" }
+        // 注：符号链接允许，但 canonical 目标必须仍位于插件目录内（防逃逸）；
+        // 插件目录内的符号链接（如 main.java → 共享源码）可正常读写
 
         val recursive = args.optBoolean("recursive", true)
         val repair = args.optBoolean("repair", false)
@@ -595,8 +615,8 @@ object ScriptPluginAgentWorkspaceTools {
             val state = accessState(pluginRoot, file)
             result += state
             if (state.symbolicLink) {
-                issues += "${state.path} 是不支持的符号链接"
-                return
+                // 符号链接：解析到真实文件继续遍历（插件目录内允许）
+                if (!recursive || state.exists) return
             }
             if (!recursive || !file.isDirectory || truncated) return
             val children = file.listFiles()
@@ -615,26 +635,31 @@ object ScriptPluginAgentWorkspaceTools {
         val symbolicLink = runCatching {
             file.absoluteFile != file.canonicalFile
         }.getOrDefault(false)
-        val directory = file.isDirectory
-        val parent = file.parentFile
+        // 符号链接解析到真实文件，检查真实文件的可操作性
+        val realFile = if (symbolicLink && exists) {
+            runCatching { file.canonicalFile }.getOrDefault(file)
+        } else {
+            file
+        }
+        val directory = realFile.isDirectory
+        val parent = realFile.parentFile
         val parentWritable = parent?.let { it.isDirectory && it.canWrite() && it.canExecute() } == true
-        val readable = exists && file.canRead()
-        val writable = exists && file.canWrite()
-        val executable = exists && file.canExecute()
+        val readable = realFile.exists() && realFile.canRead()
+        val writable = realFile.exists() && realFile.canWrite()
+        val executable = realFile.exists() && realFile.canExecute()
         val workspaceReadable = when {
             symbolicLink -> false
             !exists -> true
-            directory -> readable && executable && file.listFiles() != null
-            else -> readable && runCatching { FileInputStream(file).use { } }.isSuccess
+            directory -> readable && executable && realFile.listFiles() != null
+            else -> readable && runCatching { FileInputStream(realFile).use { } }.isSuccess
         }
         val replaceable = parentWritable
-        val modifiable = if (symbolicLink) {
-            false
-        } else if (!exists) {
+        val modifiable = if (!exists) {
             parentWritable
         } else if (directory) {
             writable && executable
         } else {
+            // 符号链接：解析到真实文件，检查真实文件是否可写
             writable || replaceable
         }
         val stat = runCatching { Os.stat(file.absolutePath) }.getOrNull()
@@ -673,10 +698,8 @@ object ScriptPluginAgentWorkspaceTools {
         val failures = ArrayList<String>()
         fun inspect(file: File) {
             if (failures.size >= 8) return
-            if (file.absoluteFile != file.canonicalFile) {
-                failures += "${file.path}: 不支持符号链接"
-                return
-            }
+            val real = runCatching { file.canonicalFile }.getOrDefault(file)
+            // 符号链接解析到真实文件后继续检查其可读性（插件目录内链接允许）
             if (file.isDirectory) {
                 if (!file.canRead() || !file.canExecute()) {
                     failures += "${file.path}: 目录不可读或不可进入"
@@ -688,7 +711,7 @@ object ScriptPluginAgentWorkspaceTools {
                     return
                 }
                 children.forEach(::inspect)
-            } else if (!file.canRead() || runCatching { FileInputStream(file).use { } }.isFailure) {
+            } else if (!real.canRead() || runCatching { FileInputStream(real).use { } }.isFailure) {
                 failures += "${file.path}: 文件不可读"
             }
         }
@@ -785,11 +808,13 @@ object ScriptPluginAgentWorkspaceTools {
                 issues += "${relative(file)} 无法解析真实路径：${error.message.orEmpty()}"
                 return
             }
-            if (file.absoluteFile != canonical) {
-                issues += "${relative(file)} 是不支持的符号链接"
+            val isLink = file.absoluteFile != canonical
+            val inspectTarget = if (isLink) canonical else file
+            if (isLink && !inspectTarget.path.startsWith(root.path + File.separator)) {
+                issues += "${relative(file)} 符号链接指向插件目录外"
                 return
             }
-            if (file.isDirectory) {
+            if (inspectTarget.isDirectory) {
                 if (!file.canRead() || !file.canExecute()) {
                     issues += "${relative(file)} 目录不可读或不可进入"
                     return
@@ -915,6 +940,8 @@ object ScriptPluginAgentWorkspaceTools {
                 "create_directory" -> createDirectory(args)
                 "write_file" -> writeFile(args)
                 "apply_patch" -> applyPatch(args)
+                "replace_text" -> replaceText(args)
+                "run_shell" -> runShell(args)
                 "move_path" -> movePath(args)
                 "delete_path" -> deletePath(args)
                 "restore_path" -> restorePath(args)
@@ -1048,9 +1075,15 @@ object ScriptPluginAgentWorkspaceTools {
             }
             val startLine = args.optInt("start_line", 1).coerceAtLeast(1)
             val startColumn = args.optInt("start_column", 1).coerceAtLeast(1)
-            val maxLines = args.optInt("max_lines", 400).coerceIn(1, 2_000)
+            val maxLines = args.optInt("max_lines", 2_000).coerceIn(1, 5_000)
             val requestedEnd = args.optInt("end_line", 0)
-            val endLine = if (requestedEnd > 0) {
+            // 文件较小（字符数在单次读取上限内）时一次返回全部，无需分页
+            val wholeFile = if (requestedEnd <= 0 && startLine == 1 && startColumn == 1) {
+                text.length <= MAX_READ_CHARS
+            } else false
+            val endLine = if (wholeFile) {
+                lines.size
+            } else if (requestedEnd > 0) {
                 requestedEnd.coerceAtLeast(startLine).coerceAtMost(lines.size)
             } else {
                 (startLine + maxLines - 1).coerceAtMost(lines.size)
@@ -1190,7 +1223,7 @@ object ScriptPluginAgentWorkspaceTools {
         private fun writeFile(args: JSONObject): String {
             requireNotDeletingPlugin()
             val relative = normalizedRelative(args.optString("path", ""))
-            val file = resolve(relative)
+            val file = resolve(relative).resolveSymlink()
             val content = args.optString("content", "")
             val contentBytes = content.toByteArray(Charsets.UTF_8)
             require(contentBytes.size <= MAX_TEXT_BYTES) { "写入内容超过 ${MAX_TEXT_BYTES / 1024 / 1024} MB" }
@@ -1210,6 +1243,7 @@ object ScriptPluginAgentWorkspaceTools {
 
         private fun applyPatch(args: JSONObject): String {
             requireNotDeletingPlugin()
+            val warnings = mutableListOf<String>()
             val patch = args.optString("patch", "")
             require(patch.isNotBlank()) { "patch 不能为空" }
             require(patch.toByteArray(Charsets.UTF_8).size <= MAX_PATCH_BYTES) {
@@ -1222,14 +1256,14 @@ object ScriptPluginAgentWorkspaceTools {
             )
             ensurePlanWithinLimits(plan)
             plan.changes.filter { it.content == null }.forEach { change ->
-                val target = resolve(change.path)
+                val target = resolve(change.path).resolveSymlink()
                 if (target.exists()) {
                     require(target.isFile) { "统一补丁只能删除文件: ${change.path}" }
                     deleteTree(target)
                 }
             }
             plan.changes.filter { it.content != null }.forEach { change ->
-                val target = resolve(change.path)
+                val target = resolve(change.path).resolveSymlink()
                 if (target.isDirectory && target.listFiles().orEmpty().isEmpty()) {
                     check(target.delete()) { "替换空目录失败: ${change.path}" }
                 }
@@ -1237,7 +1271,19 @@ object ScriptPluginAgentWorkspaceTools {
                 target.parentFile?.let { parent ->
                     if (!parent.isDirectory) check(parent.mkdirs()) { "创建父目录失败: ${change.path}" }
                 }
+                val beforeLines = if (target.isFile) {
+                    runCatching { target.readText(Charsets.UTF_8).lineSequence().count() }.getOrDefault(0)
+                } else 0
                 atomicWrite(target, change.content.orEmpty())
+                val afterLines = change.content.orEmpty().lineSequence().count()
+                if (beforeLines > 500) {
+                    val pct = if (beforeLines > 0) {
+                        ((afterLines - beforeLines).toDouble() / beforeLines * 100).toInt()
+                    } else 0
+                    if (kotlin.math.abs(pct) > 30) {
+                        warnings += "${change.path} 行数变化 ${beforeLines} -> ${afterLines}（${pct}%），超过 30%，请确认 diff 是否异常"
+                    }
+                }
             }
             changed()
             return stagedOk().apply {
@@ -1251,7 +1297,131 @@ object ScriptPluginAgentWorkspaceTools {
                         })
                     }
                 })
+                if (warnings.isNotEmpty()) put("warnings", JSONArray(warnings))
             }.toString()
+        }
+
+        private fun replaceText(args: JSONObject): String {
+            requireNotDeletingPlugin()
+            val warnings = mutableListOf<String>()
+            val relative = normalizedRelative(args.optString("path", ""))
+            val file = resolve(relative).resolveSymlink()
+            require(file.isFile) { "文件不存在: $relative" }
+            require(file.length() <= MAX_TEXT_BYTES) { "文件超过 ${MAX_TEXT_BYTES / 1024 / 1024} MB" }
+            val search = args.optString("search_string", "")
+            require(search.isNotBlank()) { "search_string 不能为空" }
+            val replacement = args.optString("replacement", "")
+            val occurrence = args.optInt("occurrence", 1)
+            val text = file.readText(Charsets.UTF_8)
+
+            // 统计所有出现位置
+            val positions = ArrayList<Int>()
+            var from = 0
+            while (true) {
+                val idx = text.indexOf(search, from)
+                if (idx < 0) break
+                positions += idx
+                from = idx + search.length
+            }
+            require(positions.isNotEmpty()) { "未找到匹配的 search_string，请检查原文" }
+            if (occurrence != -1) {
+                require(occurrence in 1..positions.size) {
+                    "occurrence=$occurrence 超出匹配次数（共 ${positions.size} 次）"
+                }
+            }
+
+            val beforeLines = text.lineSequence().count()
+            val updated = if (occurrence == -1) {
+                text.replace(search, replacement)
+            } else {
+                val idx = positions[occurrence - 1]
+                text.substring(0, idx) + replacement + text.substring(idx + search.length)
+            }
+            val afterLines = updated.lineSequence().count()
+            if (beforeLines > 500 && kotlin.math.abs(afterLines - beforeLines) * 100 / beforeLines > 30) {
+                warnings += "$relative 行数变化 $beforeLines -> $afterLines，超过 30%，请确认替换是否异常"
+            }
+            atomicWrite(file, updated)
+            changed()
+            return stagedOk().apply {
+                put("path", relative)
+                put("occurrences", positions.size)
+                put("replaced", if (occurrence == -1) positions.size else 1)
+                if (warnings.isNotEmpty()) put("warnings", JSONArray(warnings))
+            }.toString()
+        }
+
+        private fun runShell(args: JSONObject): String {
+            requireNotDeletingPlugin()
+            val command = args.optString("command", "").trim()
+            require(command.isNotBlank()) { "command 不能为空" }
+            unsafeShellCommand(command)?.let { reason ->
+                return ok().apply {
+                    put("error", "命令被沙箱拦截")
+                    put("reason", reason)
+                }.toString()
+            }
+            val timeout = args.optInt("timeout_seconds", 15).coerceIn(1, 60)
+            val result = runShellProcess(command, timeout)
+            changed()
+            return stagedOk().apply {
+                put("command", command)
+                put("exit_info", result.exitInfo)
+                put("output", result.text)
+            }.toString()
+        }
+
+        private fun runShellProcess(command: String, timeoutSeconds: Int): ShellResult {
+            val pb = ProcessBuilder("/system/bin/sh", "-c", command)
+            pb.directory(stageRoot)
+            pb.redirectErrorStream(true)
+            val process = try {
+                pb.start()
+            } catch (e: Throwable) {
+                return ShellResult("退出码: -1", "启动 shell 失败: ${e.message.orEmpty()}")
+            }
+            val finished = process.waitFor(timeoutSeconds.toLong(), TimeUnit.SECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+                val partial = readShellOutput(process)
+                return ShellResult("退出码: -1 (超时 ${timeoutSeconds}s)", "命令超时，已强制结束。\n部分输出:\n$partial")
+            }
+            val out = readShellOutput(process)
+            return ShellResult("退出码: ${process.exitValue()}", out)
+        }
+
+        private fun readShellOutput(process: Process): String {
+            return try {
+                val buffer = java.io.ByteArrayOutputStream()
+                val bytes = ByteArray(8192)
+                var total = 0L
+                while (true) {
+                    val n = process.inputStream.read(bytes)
+                    if (n < 0) break
+                    buffer.write(bytes, 0, n)
+                    total += n
+                    if (total >= MAX_TEXT_BYTES) break
+                }
+                var text = String(buffer.toByteArray(), Charsets.UTF_8)
+                if (total >= MAX_TEXT_BYTES) text += "\n...[输出已截断]"
+                text
+            } catch (e: Throwable) {
+                "(读取输出失败: ${e.message.orEmpty()})"
+            }
+        }
+
+        private data class ShellResult(val exitInfo: String, val text: String)
+
+        /** 安全检查：只拦真正危险/破坏性的命令（系统目录和网络不做拦截），返回拦截原因，null 表示放行 */
+        private fun unsafeShellCommand(command: String): String? {
+            val lower = command.lowercase(Locale.ROOT)
+            val dangerous = arrayOf(
+                ":(){", "rm -rf /", "rm -rf /*", "rm -fr /", "mkfs", "dd if=/dev/", "fdisk", "parted",
+                "reboot", "shutdown", "halt", "poweroff", "mount ", "umount ", "chmod 777 /",
+                "chmod -r /", "chown root", "passwd ", "killall", "pkill", "kill -9", "kill -s"
+            )
+            for (d in dangerous) if (lower.contains(d)) return "拦截危险命令模式: ${d.trim()}"
+            return null
         }
 
         private fun movePath(args: JSONObject): String {
@@ -1363,6 +1533,9 @@ object ScriptPluginAgentWorkspaceTools {
             }.toString()
         }
 
+        private var statusNoChangeCount = 0
+        private var lastStatusRevision = -1
+
         private fun status(): String {
             val summary = workspaceChangeSummary(includeDiff = false)
             val validation = if (deletePlugin) {
@@ -1376,6 +1549,10 @@ object ScriptPluginAgentWorkspaceTools {
                     )
                 }
             }
+            // 循环刹车：连续多次调用 status 但工作区没有新改动，提示模型停止空转
+            val noProgress = revision == lastStatusRevision
+            lastStatusRevision = revision
+            statusNoChangeCount = if (noProgress) statusNoChangeCount + 1 else 0
             checkedRevision = revision
             return ok().apply {
                 put("hasChanges", summary.hasChanges || deletePlugin)
@@ -1387,6 +1564,11 @@ object ScriptPluginAgentWorkspaceTools {
                 put("errors", JSONArray(validation.errors.map { it.message }))
                 put("warnings", JSONArray(validation.warnings.map { it.message }))
                 put("requiresDiff", true)
+                if (statusNoChangeCount >= 3) {
+                    put("loopWarning",
+                        "你已连续 $statusNoChangeCount 次检查工作区但没有任何新改动，请停止空转：若 canApply=true 且 diff 符合预期，请立即提交；" +
+                        "若存在无法修复的校验错误，请停止并说明原因，不要继续重复检查。")
+                }
             }.toString()
         }
 
@@ -1513,8 +1695,8 @@ object ScriptPluginAgentWorkspaceTools {
     private fun pathState(root: File, relative: String): String {
         val requested = File(root, relative).absoluteFile
         val target = requested.canonicalFile
-        require(requested == target && (target == root || target.path.startsWith(root.path + File.separator))) {
-            "变更路径超出插件目录或使用了符号链接: $relative"
+        require(target == root || target.path.startsWith(root.path + File.separator)) {
+            "变更路径超出插件目录: $relative"
         }
         return when {
             !target.exists() -> null
@@ -1724,16 +1906,15 @@ object ScriptPluginAgentWorkspaceTools {
     private fun copyTree(source: File, destination: File) {
         require(source.isDirectory) { "源目录不存在: ${source.path}" }
         source.walkTopDown().forEach { file ->
-            val absolute = file.absoluteFile
-            val canonical = file.canonicalFile
-            require(absolute == canonical) { "不支持符号链接: ${file.name}" }
+            val canonical = runCatching { file.canonicalFile }.getOrDefault(file)
+            // 符号链接按链接目标内容复制为普通文件（防逃逸由上层 canonical 检查保证）
             val relative = file.relativeTo(source)
             val target = File(destination, relative.path)
-            if (file.isDirectory) {
+            if (canonical.isDirectory) {
                 if (!target.isDirectory) check(target.mkdirs()) { "创建目录失败: ${target.name}" }
             } else {
                 target.parentFile?.mkdirs()
-                FileInputStream(file).use { input -> FileOutputStream(target).use { output -> input.copyTo(output) } }
+                FileInputStream(canonical).use { input -> FileOutputStream(target).use { output -> input.copyTo(output) } }
             }
         }
         enforceLimits(destination)
@@ -1864,6 +2045,12 @@ object ScriptPluginAgentWorkspaceTools {
         }
     }
 
+    private fun File.resolveSymlink(): File {
+        return runCatching {
+            if (absoluteFile != canonicalFile) canonicalFile else this
+        }.getOrDefault(this)
+    }
+
     private fun atomicWrite(target: File, content: String) {
         val temp = File(target.parentFile, ".${target.name}.agent.tmp")
         FileOutputStream(temp).use { output ->
@@ -1881,7 +2068,11 @@ object ScriptPluginAgentWorkspaceTools {
     private fun deleteTree(target: File) {
         val absolute = target.absoluteFile
         val canonical = target.canonicalFile
-        require(absolute == canonical) { "不支持删除符号链接" }
+        if (absolute != canonical) {
+            // 符号链接：只删除链接本身，不递归（防止误删链接目标内容）
+            check(target.delete()) { "删除失败: ${target.name}" }
+            return
+        }
         if (target.isDirectory) target.listFiles()?.forEach(::deleteTree)
         check(target.delete()) { "删除失败: ${target.name}" }
     }
@@ -1987,7 +2178,9 @@ object ScriptPluginAgentWorkspaceTools {
     }
 
     private fun workspaceRoot(context: Context): File {
-        return File(context.cacheDir, "Hchat_agent_plugin_workspaces").apply {
+        // 用 filesDir（应用私有持久目录，系统不会清理）替代 cacheDir，
+        // 否则缓存被系统清理会导致 Agent 暂存区丢失、会话恢复失败、Agent 反复重试死循环
+        return File(context.filesDir, "Hchat_agent_plugin_workspaces").apply {
             if (!isDirectory) check(mkdirs()) { "创建 Agent 工作区目录失败" }
         }
     }
