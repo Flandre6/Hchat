@@ -269,7 +269,11 @@ class ScriptPluginBridge internal constructor(
             iconPath = iconPath,
             front = front,
             onClick = { activity ->
-                runCatching { callback.accept(activity) }
+                runCatching {
+                    ScriptPluginRuntime.invokeScriptHook(pluginId) {
+                        callback.accept(activity)
+                    }
+                }
                     .onFailure {
                         h.Hchat.utils.HLog.e(
                             "[Hchat:Script] 加号菜单回调失败: ${pluginId.orEmpty()} ${it.message}",
@@ -296,7 +300,11 @@ class ScriptPluginBridge internal constructor(
             iconPath = iconPath,
             front = front,
             onClick = { message ->
-                runCatching { callback.accept(message) }
+                runCatching {
+                    ScriptPluginRuntime.invokeScriptHook(pluginId) {
+                        callback.accept(message)
+                    }
+                }
                     .onFailure {
                         h.Hchat.utils.HLog.e(
                             "[Hchat:Script] 长按消息菜单回调失败: ${pluginId.orEmpty()} ${it.message}",
