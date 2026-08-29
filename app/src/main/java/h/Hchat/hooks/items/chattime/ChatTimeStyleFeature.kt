@@ -3,6 +3,7 @@ package h.Hchat.hooks.items.chattime
 import android.content.SharedPreferences
 import android.view.View
 import android.widget.TextView
+import android.widget.AbsListView
 import de.robv.android.xposed.XC_MethodHook
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
@@ -73,8 +74,10 @@ private class ChatTimeStyleRuntime(
     private val timeFieldCache = ConcurrentHashMap<Class<*>, Field>()
     private val unsupportedTimeHolders = ConcurrentHashMap.newKeySet<Class<*>>()
     private val bindings = Collections.synchronizedMap(WeakHashMap<TextView, BoundTime>())
+    private val groupLastTimes = Collections.synchronizedMap(WeakHashMap<View, Long>())
     private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == ChatTimeStyleSettings.KEY_MODE || key == ChatTimeStyleSettings.KEY_TIME_FORMAT) {
+            synchronized(groupLastTimes) { groupLastTimes.clear() }
             refreshAttachedTimes()
         }
     }
@@ -90,8 +93,9 @@ private class ChatTimeStyleRuntime(
         val attached = synchronized(bindings) {
             bindings.entries.map { it.key to it.value }.also { bindings.clear() }
         }
+        synchronized(groupLastTimes) { groupLastTimes.clear() }
         attached.forEach { (view, bound) ->
-            view.post { applyStyle(view, bound, ChatTimeStyleSettings.MODE_ORIGINAL) }
+            view.post { applyStyle(view, bound, format = false) }
         }
     }
 
@@ -122,10 +126,6 @@ private class ChatTimeStyleRuntime(
         val root = findRootView(holder) ?: return
         val taggedHolder = root.tag ?: holder
         val timeView = findTimeView(taggedHolder) ?: findTimeView(holder) ?: return
-        if (mode == ChatTimeStyleSettings.MODE_ORIGINAL) {
-            bindings.remove(timeView)
-            return
-        }
         val createTime = resolveNativeMessage(args?.getOrNull(1))
             ?.let(::messageCreateTime)
             ?: resolveNativeMessage(args)?.let(::messageCreateTime)
@@ -135,29 +135,52 @@ private class ChatTimeStyleRuntime(
             nativeText = timeView.text?.toString().orEmpty(),
             nativeVisibility = timeView.visibility
         )
-        bindings[timeView] = bound
-        applyStyle(timeView, bound, mode)
+        when (mode) {
+            ChatTimeStyleSettings.MODE_HIDDEN -> {
+                bindings.remove(timeView)
+                timeView.visibility = View.GONE
+            }
+            ChatTimeStyleSettings.MODE_ORIGINAL,
+            ChatTimeStyleSettings.MODE_CUSTOM -> applyGroupedStyle(
+                timeView,
+                root,
+                bound,
+                mode == ChatTimeStyleSettings.MODE_CUSTOM
+            )
+            else -> {
+                // B's "every" mode intentionally bypasses grouping.
+                bindings[timeView] = bound
+                applyStyle(timeView, bound, format = true)
+            }
+        }
     }
 
-    private fun applyStyle(view: TextView, bound: BoundTime, mode: String) {
-        when (mode) {
-            ChatTimeStyleSettings.MODE_HIDDEN -> view.visibility = View.GONE
-            ChatTimeStyleSettings.MODE_EVERY -> {
-                view.visibility = View.VISIBLE
-                view.text = if (bound.createTime > 0L) formatTime(bound.createTime) else bound.nativeText
-            }
-            ChatTimeStyleSettings.MODE_CUSTOM -> {
-                view.visibility = bound.nativeVisibility
-                view.text = if (bound.nativeVisibility == View.VISIBLE && bound.createTime > 0L) {
-                    formatTime(bound.createTime)
-                } else {
-                    bound.nativeText
-                }
-            }
-            else -> {
-                view.text = bound.nativeText
-                view.visibility = bound.nativeVisibility
-            }
+    private fun applyGroupedStyle(
+        view: TextView,
+        itemRoot: View,
+        bound: BoundTime,
+        format: Boolean
+    ) {
+        val groupingRoot = findGroupingRoot(itemRoot)
+        val previous = groupingRoot?.let { synchronized(groupLastTimes) { groupLastTimes[it] ?: 0L } } ?: 0L
+        if (previous > 0L && bound.createTime > 0L && bound.createTime - previous < GROUP_INTERVAL_MS) {
+            bindings.remove(view)
+            view.visibility = View.GONE
+            return
+        }
+        if (groupingRoot != null && bound.createTime > 0L) {
+            synchronized(groupLastTimes) { groupLastTimes[groupingRoot] = bound.createTime }
+        }
+        bindings[view] = bound
+        applyStyle(view, bound, format)
+    }
+
+    private fun applyStyle(view: TextView, bound: BoundTime, format: Boolean) {
+        view.visibility = bound.nativeVisibility
+        view.text = if (format && bound.nativeVisibility == View.VISIBLE && bound.createTime > 0L) {
+            formatTime(bound.createTime)
+        } else {
+            bound.nativeText
         }
     }
 
@@ -166,9 +189,25 @@ private class ChatTimeStyleRuntime(
         val attached = synchronized(bindings) { bindings.entries.map { it.key to it.value } }
         attached.forEach { (view, bound) ->
             view.post {
-                if (view.parent != null) applyStyle(view, bound, mode)
+                if (view.parent == null) return@post
+                when (mode) {
+                    ChatTimeStyleSettings.MODE_HIDDEN -> view.visibility = View.GONE
+                    ChatTimeStyleSettings.MODE_CUSTOM -> applyStyle(view, bound, format = true)
+                    else -> applyStyle(view, bound, format = false)
+                }
             }
         }
+    }
+
+    private fun findGroupingRoot(itemRoot: View): View? {
+        var current: View? = itemRoot
+        while (current != null) {
+            if (current is AbsListView || current.javaClass.name.contains("RecyclerView", ignoreCase = true)) {
+                return current
+            }
+            current = current.parent as? View
+        }
+        return null
     }
 
     private fun currentMode(): String = ChatTimeStyleSettings.normalizeMode(
@@ -359,5 +398,6 @@ private class ChatTimeStyleRuntime(
         const val TAG = "[Hchat:ChatTimeStyle]"
         const val CACHE_SCHEMA = "chat_time_style_v1"
         const val CACHE_BIND_METHOD = "chat_time_bind"
+        const val GROUP_INTERVAL_MS = 300_000L
     }
 }
