@@ -208,13 +208,17 @@ private class ChatTimeStyleRuntime(
 
     private fun findGroupingRoot(itemRoot: View): View? {
         var current: View? = itemRoot
+        var topmost: View = itemRoot
         while (current != null) {
+            topmost = current
             if (current is AbsListView || current.javaClass.name.contains("RecyclerView", ignoreCase = true)) {
                 return current
             }
             current = current.parent as? View
         }
-        return null
+        // Some WeChat builds wrap the message list in a renamed container.
+        // Keep a stable top-level ancestor so grouping still works there.
+        return topmost
     }
 
     private fun currentMode(): String = ChatTimeStyleSettings.normalizeMode(
