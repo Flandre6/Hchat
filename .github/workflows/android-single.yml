@@ -9,7 +9,6 @@ permissions:
 env:
   HCAT_SINGLE_VERSION_NAME_BASE: "5.5.6"
   HCAT_SINGLE_VERSION_CODE_BASE: "490"
-  HCAT_SINGLE_RUN_NUMBER_BASE: "294"
 
 jobs:
   build:
@@ -91,11 +90,18 @@ jobs:
             version_name="$(bump_version "$version_name")"
           done
 
-          version_code=$((
-            HCAT_SINGLE_VERSION_CODE_BASE +
-            GITHUB_RUN_NUMBER -
-            HCAT_SINGLE_RUN_NUMBER_BASE
-          ))
+          # 版本码只使用当前仓库自己的运行号。Fork 仓库的
+          # GITHUB_RUN_NUMBER 会从 1 重新开始，因此不能再减原仓库的
+          # 运行号基线；否则基线较大时会得到 <= 基础版本码的结果。
+          # 运行号异常或为 0 时使用最小偏移 1，保证永远大于基础值。
+          run_offset="${GITHUB_RUN_NUMBER:-0}"
+          case "$run_offset" in
+            ''|*[!0-9]*) run_offset=0 ;;
+          esac
+          if [ "$run_offset" -lt 1 ]; then
+            run_offset=1
+          fi
+          version_code=$((HCAT_SINGLE_VERSION_CODE_BASE + run_offset))
           if [ "$version_code" -le "$HCAT_SINGLE_VERSION_CODE_BASE" ] \
             || [ "$version_code" -gt 2147483647 ]; then
             echo "单频道构建版本 Code 超出有效范围: ${version_code}"
