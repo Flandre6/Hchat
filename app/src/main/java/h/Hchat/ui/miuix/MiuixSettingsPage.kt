@@ -280,6 +280,7 @@ import h.Hchat.hooks.items.hidemenu.HideChatMenuSettings
 import h.Hchat.hooks.items.hotupdate.DisableHotUpdateFeature
 import h.Hchat.hooks.items.hotupdate.DisableHotUpdateSettings
 import h.Hchat.hooks.items.hometextcolor.HomeTextColorFeature
+import h.Hchat.hooks.items.homesidepanel.HomeSidePanelFeature
 import h.Hchat.hooks.items.hometextcolor.HomeTextColorSettings
 import h.Hchat.hooks.items.inputhint.InputHintFeature
 import h.Hchat.hooks.items.inputhint.InputHintSettings
@@ -3092,6 +3093,7 @@ private fun practicalFeatureGroups(
                 MessageBubbleFeature.ID,
                 MessageTextColorFeature.ID,
                 HomeTextColorFeature.ID,
+                HomeSidePanelFeature.ID,
                 ChatTimeStyleFeature.ID,
                 InputHintFeature.ID,
                 HideChatAvatarFeature.ID,
@@ -3897,6 +3899,7 @@ private fun featureSubSearchTerms(featureId: String): List<String> {
         MessageBubbleFeature.ID -> listOf("消息气泡", "聊天气泡", "自定义气泡", "左侧气泡", "右侧气泡", "红包气泡", "转账气泡", "系统消息气泡", "浅色模式", "深色模式", "NinePatch", "九宫格")
         MessageTextColorFeature.ID -> listOf("消息文本颜色", "文字颜色", "聊天气泡文字", "取色器", "浅色模式", "深色模式")
         HomeTextColorFeature.ID -> listOf("首页文字颜色", "标题颜色", "副标题颜色", "渐变文字", "微信首页", "通讯录", "发现", "我")
+        HomeSidePanelFeature.ID -> listOf("首页侧边栏", "侧边栏", "快捷面板", "左缘右滑", "首页抽屉", "二维码", "收付款", "收藏")
         ChatTimeStyleFeature.ID -> listOf("会话时间样式", "聊天时间", "微信时间", "自定义时间", "隐藏时间", "时间格式")
         HideChatAvatarFeature.ID -> listOf("隐藏头像", "隐藏自己头像", "隐藏对方头像", "聊天头像", "群聊头像", "私聊头像")
         CustomBottomBarFeature.ID -> listOf(
@@ -4563,6 +4566,7 @@ private fun FeatureSettingsPage(
         BackgroundBeautyFeature.ID -> BackgroundBeautyMiuixPage(context, provider, onBack)
         MessageTextColorFeature.ID -> MessageTextColorMiuixPage(context, provider, onBack)
         HomeTextColorFeature.ID -> HomeTextColorMiuixPage(context, provider, onBack)
+        HomeSidePanelFeature.ID -> HomeSidePanelMiuixPage(context, provider, onBack)
         ChatTimeStyleFeature.ID -> ChatTimeStyleMiuixPage(context, provider, onBack)
         InputHintFeature.ID -> InputHintMiuixPage(context, provider, onBack)
         HideChatAvatarFeature.ID -> HideChatAvatarMiuixPage(context, provider, onBack)
