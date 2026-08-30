@@ -33,7 +33,6 @@ import h.Hchat.hooks.items.hideavatar.HideChatAvatarFeature
 import h.Hchat.hooks.items.hidemenu.HideChatMenuFeature
 import h.Hchat.hooks.items.hotupdate.DisableHotUpdateFeature
 import h.Hchat.hooks.items.hometextcolor.HomeTextColorFeature
-import h.Hchat.hooks.items.homesidepanel.HomeSidePanelFeature
 import h.Hchat.hooks.items.inputhint.InputHintFeature
 import h.Hchat.hooks.items.keepalive.WeChatKeepAliveFeature
 import h.Hchat.hooks.items.keywordnotify.KeywordNotificationFeature
@@ -148,7 +147,6 @@ object FeatureRegistry {
             .register(BackgroundBeautyFeature())
             .register(MessageTextColorFeature())
             .register(HomeTextColorFeature())
-            .register(HomeSidePanelFeature())
             .register(HideChatAvatarFeature())
             .register(MessageBlockFeature())
             .register(FakeLocationFeature())
