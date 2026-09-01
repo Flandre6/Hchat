@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-REPO="ljh520134/Hchat"
+REPO="ljh520134/Hchat-alt-entry"
 OUT_DIR="dist"
 TAG="${1:-}"
 CHANNEL="${2:-${HCAT_RELEASE_CHANNEL:-}}"
