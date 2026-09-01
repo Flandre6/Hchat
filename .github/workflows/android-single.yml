@@ -7,10 +7,9 @@ permissions:
   contents: write
 
 env:
-  env:
   HCAT_SINGLE_VERSION_NAME_BASE: "5.5.6"
   HCAT_SINGLE_VERSION_CODE_BASE: "490"
-  HCAT_SINGLE_RUN_NUMBER_BASE: "100"  # Reduced significantly from 294
+  HCAT_SINGLE_RUN_NUMBER_BASE: "1"  # Set to 1 or a very low number
 
 jobs:
   build:
