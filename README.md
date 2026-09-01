@@ -40,20 +40,11 @@ cd Hchat-alt-entry
 git status --short --branch
 ```
 
-开始改代码前先阅读：
-
-1. `AGENTS.md`
-2. `docs/AI_CODING_TUTORIAL.md`
-3. `docs/FEATURE_FRAMEWORK.md`
-4. `docs/WECHAT_APIS.md` 或 `docs/SCRIPT_PLUGIN_API.md`
+开始改代码前先阅读 `AGENTS.md` 和教程；需要改具体功能时，再按需阅读对应 API/功能文档。
 
 ## 构建
 
-仓库当前使用 Gradle Wrapper 9.5.1、Android Gradle Plugin 9.1.0、JDK 17 编译源码，GitHub Actions 使用 JDK 21；当前 `compileSdk` 和 `targetSdk` 是 37，`minSdk` 是 27。
-
-正式 Release 默认开启 R8 和资源压缩。新贡献者没有项目签名证书时，应先做编译检查或使用自己的测试签名；更换证书生成的 APK 不能保证覆盖安装维护者发布的版本。
-
-构建命令、无 R8 测试、签名和 GitHub Actions 说明全部写在 [AI Coding 完整教程](docs/AI_CODING_TUTORIAL.md) 中。
+正式 Release、无 R8 测试、签名和 GitHub Actions 说明统一放在 [AI Coding 完整教程](docs/AI_CODING_TUTORIAL.md) 中。
 
 ## 脚本插件
 

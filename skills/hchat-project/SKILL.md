@@ -65,7 +65,7 @@ cd /data/data/com.termux/files/home/Hchat-alt-entry
 
 - 不确定微信内部逻辑时先逆向，不猜类名、方法名、字段、构造签名、数据库表、Intent 参数或网络结构。
 - 用户明确确认“无 R8 正常、R8 异常”时，必须先对同一代码基线的最终 APK 做 DEX/Smali 对比，优先检查 keep 规则、反射/脚本方法名、方法描述符、类型收窄和 Android 公共 ABI 边界；没有最终产物证据前不得反复修改业务逻辑或连续触发构建。R8 敏感路径用宽泛异常返回 `null` 时必须对原始 Throwable 做限频错误日志，不能静默吞掉根因。
-- 涉及微信内部结构、DexKit、反射、数据库、Intent、网络场景或版本兼容时，默认横向覆盖 `8.0.49`、`8.0.58`、`8.0.66`、`8.0.68`、`8.0.72`、`8.0.74`、`8.0.76`；如果缺 APK 或用户明确限制单版本，必须说明原因。
+- 涉及微信内部结构、DexKit、反射、数据库、Intent、网络场景或版本兼容时，默认横向覆盖 `8.0.49`、`8.0.58`、`8.0.66`、`8.0.68`、`8.0.72`、`8.0.74`、`8.0.76`、`8.0.77`；如果缺 APK 或用户明确限制单版本，必须说明原因。
 - 替换现有逆向 Hook 入口时，必须删除被替代的定位、缓存和运行时分支，不保留未经当前版本证据支持的旧兜底；新入口按默认版本集合重新横向确认。
 - 同一功能在目标版本同时存在旧列表、现代列表、分组列表或灰度分支时，必须保留并安装所有经逆向确认仍可达的并行业务入口；不能因为优先候选已命中就提前结束定位。
 - 优先复用 `WeChatApis` 已封装能力；没有公共 API 时，再用 DexKit、DexClub、APK 逆向证据确认。
@@ -79,16 +79,11 @@ cd /data/data/com.termux/files/home/Hchat-alt-entry
 - 反射或 Hook 签名发生变化时，日志应包含微信版本、目标描述符和失败阶段等必要定位信息。
 - 新增反射代码统一走 `h.Hchat.utils.KavaReflector`。
 
-常用微信 APK：
+APK 路径由用户自行填写，不在项目规则中预设个人设备目录或文件名。传给 DexClub 时使用绝对路径，例如：
 
-```text
-/storage/emulated/0/Download/微信归档/weixin8049android2600_0x2800313d_arm64.apk
-/storage/emulated/0/Download/微信归档/weixin8058android2841_0x28003a3f_arm64.apk
-/storage/emulated/0/Download/微信归档/weixin8066android2980_0x28004234_arm64.apk
-/storage/emulated/0/Download/微信归档/weixin8068android3020_0x28004434_arm64.apk
-/storage/emulated/0/Download/微信归档/weixin8072android3100_0x28004835_arm64.apk
-/storage/emulated/0/Download/微信归档/weixin8074android3120_0x28004a36_arm64.apk
-/storage/emulated/0/Download/微信归档/weixin8076android3140_0x28004c30_arm64.apk
+```sh
+export WECHAT_APK="/你的目录/你的微信APK.apk"
+test -f "$WECHAT_APK" && ls -lh "$WECHAT_APK"
 ```
 
 ## DexKit 规则
