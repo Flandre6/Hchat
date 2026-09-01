@@ -1,6 +1,6 @@
 # Hchat 脚本插件接口
 
-本文档给插件作者使用。Hchat 脚本插件采用 WA 风格，脚本文件是 BeanShell 写法，文件名固定为 `main.java`。
+本文档给插件作者使用。Hchat 脚本插件采用 WA 风格，脚本文件是 BeanShell 写法，文件名固定为 `main.java`。少量接口会比 WA 多返回 `boolean`；脚本不接收返回值时仍可直接调用。
 
 插件 Agent 只能把本文档、内置开发指南及当前运行时/工具结果明确确认的内容当作事实。能力、可用性或限制没有明确依据时，必须说明未知或需要运行时验证，不得猜测。
 
@@ -10,7 +10,44 @@ Agent 的联网函数工具分为 `hchat_web_search` 和 `hchat_web_fetch`：前
 
 Agent 内置逆向工具还支持资源 ID 使用方法定位，以及目标类/方法的 Java 语义导出和 Smali 原始导出；大文本通过 `offset` / `nextOffset` 分页。Java 导出只加载目标类所在的单个 Dex，完成后立即释放。
 
-Agent 的回合、原生工具调用、工具结果、思考、Working、中断和上下文压缩规则见 `docs/AGENT_INTERACTION.md`。支持原生工具的接口使用标准 `assistant.tool_calls` / `tool` 消息；旧接口仍兼容 JSON 控制协议，控制字段不会显示为聊天正文。
+Agent 的回合、原生工具调用、工具结果、思考、Working、中断和上下文压缩规则见本文档后面的“Agent 交互架构”章节。支持原生工具的接口使用标准 `assistant.tool_calls` / `tool` 消息；旧接口仍兼容 JSON 控制协议，控制字段不会显示为聊天正文。
+
+## 快速开始
+
+先记住这些最常用的入口：
+
+- 插件主文件固定为 `main.java`；
+- 常用生命周期和回调是 `onLoad()`、`onHandleMsg(Object msgInfoBean)`、`onClickSendBtn(String text)`、`onLongClickSendBtn(String text)`；
+- 给当前聊天发消息通常使用 `getTargetTalker()`；
+- 临时文件、下载文件和生成图片通常放在 `cacheDir`，插件自带文件通常从 `pluginDir` 读取；
+- `onClickSendBtn` 和 `onLongClickSendBtn` 在微信主线程执行，插件解释器忙碌时本次回调会跳过并放行原始事件，网络、文件和长循环操作必须异步执行。
+
+最小自动回复示例：
+
+```beanshell
+void onHandleMsg(Object msgInfoBean) {
+    if (msgInfoBean.isSend()) return;
+    if (!msgInfoBean.isText()) return;
+
+    String talker = msgInfoBean.getTalker();
+    String content = msgInfoBean.getContent();
+    if ("在吗".equals(content)) {
+        sendText(talker, "在");
+    }
+}
+```
+
+最小发送拦截示例：
+
+```beanshell
+boolean onClickSendBtn(String text) {
+    if ("/ping".equals(text)) {
+        sendText(getTargetTalker(), "pong");
+        return true;
+    }
+    return false;
+}
+```
 
 ## 插件目录
 
@@ -447,6 +484,10 @@ boolean onLongClickSendBtn(String text) {
 | `getAtUserList()` | 被 @ 的 wxid 列表。 |
 | `getSelfWxId()` | 当前登录账号 wxid。 |
 | `getNativeUrl()` | 红包等消息里的 `nativeUrl`，没有时为空字符串。 |
+| `getSource()` | 消息来源标识。 |
+| `getKind()` | 消息分类。 |
+| `getMessage()` | 原始消息对象。 |
+| `getStoredMessage()` | 数据库消息对象。 |
 | `getImageMsg()` | 图片消息结构。不是图片消息时可能为 `null`。 |
 | `getVideoMsg()` | 视频消息结构。支持消息类型 `43/62`，不是视频消息时可能为 `null`。 |
 | `getQuoteMsg()` | 引用消息结构。不是引用消息时可能为 `null`。 |
@@ -469,6 +510,7 @@ Hchat 传给 `onHandleMsg(...)` 的消息对象兼容 `me.hd.wauxv.data.bean.Msg
 | `isChatroom()` | 是否普通微信群聊。 |
 | `isImChatroom()` | 是否企业微信群聊。 |
 | `isOfficialAccount()` | 是否公众号消息。 |
+| `isOpenIM()` | 是否企业微信私聊。 |
 | `isText()` | 是否文本消息。 |
 | `isImage()` | 是否图片消息。 |
 | `isVoice()` | 是否语音消息。 |
@@ -489,9 +531,13 @@ Hchat 传给 `onHandleMsg(...)` 的消息对象兼容 `me.hd.wauxv.data.bean.Msg
 | `isShareCard()` | 是否名片消息。 |
 | `isPat()` | 是否拍一拍消息。 |
 | `isRecalled()` | 是否撤回消息。 |
+| `isVoip()` | 是否通话消息。 |
+| `isVoipVoice()` | 是否语音通话。 |
+| `isVoipVideo()` | 是否视频通话。 |
 | `isAtMe()` | 是否单独 @ 我；@ 全体和群公告全体不会同时返回 true。 |
 | `isNotifyAll()` | 是否 @ 全体，兼容服务端把全体名单展开成当前账号 wxid 的消息。 |
 | `isAnnounceAll()` | 是否群公告类全体提醒。 |
+| `isVideoNumberVideo()` | 是否视频号视频。 |
 
 常见子结构：
 
@@ -502,6 +548,30 @@ Hchat 传给 `onHandleMsg(...)` 的消息对象兼容 `me.hd.wauxv.data.bean.Msg
 | `getQuoteMsg()` | `getTitle()` 引用标题；`getMsgSource()` 消息来源；`getSendTalker()`/`getSenderId()` 原消息发送者 wxid。模块优先按引用 `svrid` 回查原消息，并按原消息的发送方向返回真实 wxid（私聊引用自己时返回自己的 wxid）；表情等引用 `svrid` 不完整时，再按引用会话、消息类型、时间和内容回查本地原消息。查询不到时只接受引用 XML 中的真实非群聊 ID，不会把群 ID 当作发送者返回；`getDisplayName()` 显示名；`getTalker()`/`getTalkerId()` 原消息所在会话 ID；`getType()` 消息类型；`getContent()` 原消息内容；`getSvrId()` 服务端消息ID；`getStrId()` 字符串ID；`getCreateTime()` 创建时间。 |
 | `getPatMsg()` | `getTalker()` 聊天Id；`getFromUser()` 发起者；`getPattedUser()` 被拍者；`getTemplate()` 展示模板；`getCreateTime()` 创建时间。 |
 | `getFileMsg()` | `getTitle()` 文件标题；`getSize()` 文件字节；`getExt()` 文件后缀；`getMd5()` 文件MD5；`getUrl()` 文件链接；`getKey()` 文件密钥；`getAttachId()` 附件ID；`getFileName()` 文件名。 |
+| `getTransferMsg()` | `getTransactionId()` / `getTransId()` 转账交易 ID；`getTransferId()` 转账 ID；`getPayerUsername()` / `getPayer()` 付款方账号；`getReceiver()` 收款方账号；`getInvalidTime()` 失效时间；`getFee()` 金额；`getDescription()` 描述；`getRawXml()` 原始 XML。对象也提供 `transactionId`、`transferId`、`payerUsername` 字段。 |
+
+联系人对象兼容方法：
+
+```beanshell
+FriendInfo {
+    String getWxid();// wxid
+    String getName();// 显示名
+    String getNickname();// 昵称
+    String getRemark();// 备注
+    String getRemarkName();// 备注
+}
+
+GroupInfo {
+    String getRoomId();// 群 ID
+    String getName();// 群名称
+    String getNickname();// 群聊昵称
+    String getRemark();// 群备注
+    String getRemarkName();// 群备注
+    String getDisplayName();// 显示名
+    List<String> getMemberList();// 成员列表
+    int getMemberCount();// 成员数量
+}
+```
 示例：
 
 ```java

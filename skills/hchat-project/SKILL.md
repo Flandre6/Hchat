@@ -79,7 +79,7 @@ cd /data/data/com.termux/files/home/Hchat-alt-entry
 - 反射或 Hook 签名发生变化时，日志应包含微信版本、目标描述符和失败阶段等必要定位信息。
 - 新增反射代码统一走 `h.Hchat.utils.KavaReflector`。
 
-APK 路径由用户自行填写，不在项目规则中预设个人设备目录或文件名。传给 DexClub 时使用绝对路径，例如：
+微信 APK 路径由用户自行设置，不在项目规则中预设个人设备目录或文件名。传给 DexClub 时使用绝对路径：
 
 ```sh
 export WECHAT_APK="/你的目录/你的微信APK.apk"

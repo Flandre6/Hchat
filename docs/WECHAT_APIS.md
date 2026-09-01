@@ -186,12 +186,7 @@ boolean custom = WeChatApis.message().sender().sendTextWithAtList(
 - 文本显示格式使用 `@显示名\u2005`，其中 `\u2005` 是微信自己用于 @ 后分隔的空白字符。
 - @ 全体使用 `notify@all` 作为 `atuserlist` 值；是否具备 @ 全体权限由微信自身处理。
 
-确认过的 APK：
-
-- `/storage/emulated/0/Download/微信归档/微信_8.0.49.apk`
-- `/storage/emulated/0/Download/微信归档/weixin8058android2841_0x28003a3f_arm64.apk`
-- `/storage/emulated/0/Download/微信归档/weixin8072android3100_0x28004835_arm64.apk`
-- `/storage/emulated/0/Download/微信归档/weixin8074android3100_0x28004a12_arm64.apk`
+确认过的版本：`8.0.49`、`8.0.58`、`8.0.72`、`8.0.74`。APK 的绝对路径由开发者在本机自行设置，不在文档中固定目录或文件名。
 
 不要使用 WA 文档里的 `[AtWx=...]` 作为本模块协议；那是 WA 封装层语法，不是这里使用的微信原生发送参数。
 
@@ -238,12 +233,7 @@ WeChatApis.message().store().clearConversationMessages(talker);
 WeChatApis.message().store().clearConversationMessages(talkers);
 ```
 
-常规会话查询读取 `message` 表稳定字段；`getOutgoingMessages(startTime, endTime)` 专门汇总时间范围内 `isSend=1` 的消息，每次完整校准都会重新发现 `message`、`message_*`、`*_message` 表并确认统计所需列，再按 `msgId` 去重，因此运行期间新增的分表不会被旧缓存漏掉。`getOutgoingMessagesOrNull(...)` 语义相同，但任一有效消息表读取失败时返回 `null`，供不能把查询失败当成空结果的内部统计使用。输入框提示和发送文本格式用该接口生成本地自然日统计，所以手动、模块和脚本插件发送的消息只要已由微信实际记录，都会进入同一统计快照。已用 DexClub 在以下 APK 中确认 `message/createTime/talker/content` 查询基础仍存在：
-
-- `/storage/emulated/0/Download/微信归档/微信_8.0.49.apk`
-- `/storage/emulated/0/Download/微信归档/weixin8058android2841_0x28003a3f_arm64.apk`
-- `/storage/emulated/0/Download/微信归档/weixin8072android3100_0x28004835_arm64.apk`
-- `/storage/emulated/0/Download/微信归档/weixin8074android3100_0x28004a12_arm64.apk`
+常规会话查询读取 `message` 表稳定字段；`getOutgoingMessages(startTime, endTime)` 专门汇总时间范围内 `isSend=1` 的消息，每次完整校准都会重新发现 `message`、`message_*`、`*_message` 表并确认统计所需列，再按 `msgId` 去重，因此运行期间新增的分表不会被旧缓存漏掉。`getOutgoingMessagesOrNull(...)` 语义相同，但任一有效消息表读取失败时返回 `null`，供不能把查询失败当成空结果的内部统计使用。输入框提示和发送文本格式用该接口生成本地自然日统计，所以手动、模块和脚本插件发送的消息只要已由微信实际记录，都会进入同一统计快照。已用 DexClub 在 `8.0.49`、`8.0.58`、`8.0.72`、`8.0.74` 确认 `message/createTime/talker/content` 查询基础仍存在。APK 的绝对路径由开发者在本机自行设置，不在文档中固定目录或文件名。
 
 `clearConversationMessages(...)` 复用微信设置页的 `MsgInfoStorageLogic` Stage1/Stage2 异步清理链路，不直接 SQL 删除消息。单个或批量方法返回 `true` 只表示清理任务已成功提交，不表示后台删除已经完成。8.0.49 至 8.0.74 的批量入口为 `(List,callback,long)`，8.0.76 为 `(List,callback)`；运行时通过 `summerdel deleteMsgByTalker`、`AsyncDeleteMessageStage1` 等稳定字符串定位并按微信运行时 key 缓存。
 

@@ -192,19 +192,21 @@ sh ./gradlew :app:assembleRelease --no-daemon --no-watch-fs -x lintVitalAnalyzeR
 - `libhchat_crash.so` 由 `scripts/build_crash_native.sh` 使用 Termux Clang/LLD 生成；脚本会同时生成两套 ABI、去除调试符号，并校验 ELF 架构、`libc.so` 依赖和 JNI 导出。日常 Gradle/GitHub 构建直接打包已提交的 `.so`，不要求额外安装 NDK。
 - 当前本地接管版本：`1.0.6`（上游提交 `c09fc1f534c7435c7b4c11a84a4632c6d177e1b9`）
 
-## 常用逆向微信 APK
+## 微信 APK 横向验证
 
-不确定微信内部逻辑时，优先逆向以下本机归档 APK 做横向对比，不要只看单一版本，也不要写死某个版本的混淆类名、字段名或构造签名。凡是涉及微信内部结构、布局、DexKit、反射、数据库、Intent、网络场景或版本兼容的改动，默认必须统一覆盖 `8.0.49`、`8.0.58`、`8.0.66`、`8.0.68`、`8.0.72`、`8.0.74`、`8.0.76`；除非对应 APK 缺失或用户明确要求单版本，并且必须在结论里说明未覆盖原因：
+不确定微信内部逻辑时，优先对多个版本 APK 做横向对比，不要只看单一版本，也不要写死某个版本的混淆类名、字段名或构造签名。凡是涉及微信内部结构、布局、DexKit、反射、数据库、Intent、网络场景或版本兼容的改动，默认尽量覆盖 `8.0.49`、`8.0.58`、`8.0.66`、`8.0.68`、`8.0.72`、`8.0.74`、`8.0.76`、`8.0.77`；除非对应 APK 缺失或用户明确要求单版本，并且必须在结论里说明未覆盖原因。
 
-```text
-/storage/emulated/0/Download/微信归档/weixin8049android2600_0x2800313d_arm64.apk
-/storage/emulated/0/Download/微信归档/微信_8.0.49.apk
-/storage/emulated/0/Download/微信归档/weixin8058android2841_0x28003a3f_arm64.apk
-/storage/emulated/0/Download/微信归档/weixin8066android2980_0x28004234_arm64.apk
-/storage/emulated/0/Download/微信归档/weixin8068android3020_0x28004434_arm64.apk
-/storage/emulated/0/Download/微信归档/weixin8072android3100_0x28004835_arm64.apk
-/storage/emulated/0/Download/微信归档/weixin8074android3120_0x28004a36_arm64.apk
-/storage/emulated/0/Download/微信归档/weixin8076android3140_0x28004c30_arm64.apk
+APK 的存放目录和文件名由开发者自行决定，不在仓库中预设个人设备路径。可在本机按版本设置绝对路径变量：
+
+```sh
+export WECHAT_APK_8049="/你的路径/微信8049.apk"
+export WECHAT_APK_8058="/你的路径/微信8058.apk"
+export WECHAT_APK_8066="/你的路径/微信8066.apk"
+export WECHAT_APK_8068="/你的路径/微信8068.apk"
+export WECHAT_APK_8072="/你的路径/微信8072.apk"
+export WECHAT_APK_8074="/你的路径/微信8074.apk"
+export WECHAT_APK_8076="/你的路径/微信8076.apk"
+export WECHAT_APK_8077="/你的路径/微信8077.apk"
 ```
 
 常用覆盖点必须全部纳入默认横向验证，不要因为 66/68 是中间版本就跳过：
@@ -212,7 +214,7 @@ sh ./gradlew :app:assembleRelease --no-daemon --no-watch-fs -x lintVitalAnalyzeR
 - `8.0.49`: 旧稳定基线，很多入口和字段最容易对照。
 - `8.0.58`: 中间版本，常用于确认 49 到 72 之间的签名变化。
 - `8.0.66` / `8.0.68`: 支付、媒体、AppMsg 等链路出现过参数差异，适合补兼容。
-- `8.0.72` / `8.0.74` / `8.0.76`: 新版基线，优先确认当前高版本行为。
+- `8.0.72` / `8.0.74` / `8.0.76` / `8.0.77`: 新版基线，优先确认当前高版本行为；`8.0.77` 的 versionCode 以实际 APK 为准。
 
 微信热更新相关逆向时，优先先看这些共同入口，不要先猜微信自有混淆类：
 
@@ -227,10 +229,14 @@ sh ./gradlew :app:assembleRelease --no-daemon --no-watch-fs -x lintVitalAnalyzeR
 
 模拟相机扫码功能位于实用分类，核心只改写 QBarStringHandler 入参里的来源/场景，把相册扫码 `1/34` 或长按识别 `4/37` 改成相机扫码 `0/4`，不重新识别图片、不改二维码内容，也不改相机真实扫码。最终业务入口都带 `MicroMsg.QBarStringHandler` + `key_offline_scan_show_tips` 字符串锚点，定位必须使用 DexKit `usingEqStrings` 精确字符串匹配：`8.0.49` 是 `l73.l.f`，`8.0.58` 是 `hj3.k.f`，`8.0.66` 是 `gq3.p.g`，`8.0.68` 是 `ht3.p.g`，这四版为 15 参数签名，`source/getA8KeyScene` 位于参数 `2/3`；已确认的 `8.0.70 cw3.p.g`、`8.0.72 ry3.p.g`、`8.0.74 e04.p.g` 是 16 参数签名，新增 `scanUIScene` 后 `source/getA8KeyScene` 位于参数 `3/4`。`8.0.72`、`8.0.74` 的 `wedropf2fhb://` 红包码分支会硬判断 `getA8KeyScene == 4`，否则显示“仅支持扫一扫摄像头识别”类错误。实现只 hook QBarStringHandler，不再 hook BaseScanUI、扫码结果 Bundle 构造/派发方法、相册选择或二维码解码链路；命中方法必须用 `DexMethodCache` 缓存，缓存 key 要带功能 schema，并且每次定位前实时读取 runtime key，不能在 hooker 构造时固定旧版本 key，用于废弃旧定位策略留下的错误缓存。缓存缺失、DexKit 首次空结果或 Hook 安装失败时，必须在当前微信进程内做有限后台重试，不能依赖用户多次强停微信触发重建。
 
-同目录还有更多相邻版本，必要时用：
+检查本机变量是否指向有效文件：
 
 ```sh
-find /storage/emulated/0/Download/微信归档 -maxdepth 1 -type f | sort
+for apk in "$WECHAT_APK_8049" "$WECHAT_APK_8058" "$WECHAT_APK_8066" \
+  "$WECHAT_APK_8068" "$WECHAT_APK_8072" "$WECHAT_APK_8074" \
+  "$WECHAT_APK_8076" "$WECHAT_APK_8077"; do
+  test -n "$apk" && test -f "$apk" && ls -lh "$apk"
+done
 ```
 
 ## 脚本插件规则
@@ -850,7 +856,7 @@ Agent 默认内置当前微信 APK 的本地逆向工具，不需要用户配置
 
 Agent 也可主动请求联网搜索或连接用户配置的多个远程 Streamable HTTP MCP 服务器。原生函数协议把联网拆成 `hchat_web_search` 和 `hchat_web_fetch`：前者按关键词或 `owner/repo` 查找公开资料，后者读取已经给出的完整 HTTP(S) 网页、README、GitHub 文件或目录正文；兼容 JSON 协议仍通过 `searchQuery` 自动区分关键词和 URL。工具结果带回实际来源并进入下一轮上下文，HTTP 状态、限流和不可读取的响应类型会明确反馈，不把失败伪装成“没有该资料”。GitHub 的仓库 URL、README、`blob` 文件和 `tree` 目录分别读取仓库元数据、README、文件内容或目录树。Codex 的服务端 `web_search` 工具不能直接嵌入 Android APK，因此模块端使用同样的工具调用和结果回灌流程实现等价能力，并限制响应大小和内网地址访问。联网请求优先使用系统返回的真实公网地址；系统只返回已知的公网代理合成地址或本地解析失败时，通过固定公网引导的 DoH 取得并短时缓存真实公网 IPv4，DoH 不可用时才回退该已知系统代理地址，普通内网地址和 IP 直连仍然拒绝。网页正文按响应声明字符集解码，直读握手失败时回退到可核验搜索结果。
 
-兼容接口优先收到标准 OpenAI `tools` 定义；插件工作区、本地逆向、联网、文件和 MCP 调用使用 `assistant.tool_calls` / `tool` 角色回传并保存 `tool_call_id`。服务端不支持原生工具时自动退回 JSON 控制协议，已知的 `hchat.workspace.*` 与 `hchat.reverse.*` 调用仍会作为结构化工具事件执行，控制字段不会显示为聊天正文。详细的回合边界、思考、Working、中断、压缩和当前差异见 `docs/AGENT_INTERACTION.md`。
+兼容接口优先收到标准 OpenAI `tools` 定义；插件工作区、本地逆向、联网、文件和 MCP 调用使用 `assistant.tool_calls` / `tool` 角色回传并保存 `tool_call_id`。服务端不支持原生工具时自动退回 JSON 控制协议，已知的 `hchat.workspace.*` 与 `hchat.reverse.*` 调用仍会作为结构化工具事件执行，控制字段不会显示为聊天正文。详细的回合边界、思考、Working、中断和压缩见本文档后面的“Agent 交互架构”章节。
 
 每轮聊天和工具事件都保存 `messageId`、`turnId`、父消息 ID、执行阶段和完成时间；同一模型响应返回的多个工具调用会完整进入队列，联网搜索和外部文件读取最多并行 3 个，插件工作区、DexKit、MCP 和未知副作用工具串行。工具结果超过单页大小时写入会话结果仓库，并通过 `hchat.reverse.read_tool_result` 返回 `handle` / `nextOffset` 续读；结果预览和完整详情分开保存，分支复制和删除消息会同步处理结果文件。
 插件工作区的 `write_file` 和 `apply_patch` 工具在聊天记录中只显示工具状态和本次彩色 Diff，不显示调用参数、结果摘要或结果详情；其他只读、逆向、联网和 MCP 工具继续保留参数与结果详情。
@@ -1478,3 +1484,452 @@ sFastMyWxid
 - 红包领取/打开 DexKit 目标
 
 新增可复用微信 API 时，在目标 APK 验证完成后，也要把它加入 `WeChatDiagnosticsApi.buildCompatibilityIssues()`。
+
+## Agent 交互架构
+
+### 一次请求的生命周期
+
+Hchat 的一次生成按以下顺序运行：
+
+1. 保存用户消息、附件和引用快照。
+2. 根据当前会话、插件草稿、压缩摘要、已授权路径和工具目录组装请求。
+3. 优先向 OpenAI 兼容接口发送 `tools`。工具名称和参数来自插件工作区、本地逆向目录、MCP `tools/list` 以及模块内置的联网和外部文件工具。
+4. 收到工具调用后，调用插件工作区、本地逆向、联网、外部文件或 MCP 实现，并把工具调用、参数、状态和结果写入独立事件。
+5. 使用标准的 `assistant.tool_calls` 与 `tool` 消息把结果回传给模型，继续同一任务。
+6. 插件文件有变更时，模型必须在最后一次写操作后依次调用 `workspace_status` 和 `show_diff(path=".")`，再返回 `workspace_done`。客户端从暂存目录重新计算标准统一 diff、执行静态检查并事务提交；没有文件任务时直接回答用户。
+
+### 会话生命周期
+
+- 首次进入插件 Agent 都从一个临时新对话开始，不自动续接最近历史会话；离开时仍在查看的会话会在下一次进入时恢复，其他旧会话需要从历史列表主动打开。
+- 开启 `界面 -> 悬浮快捷菜单` 后，可通过其中的 `插件 Agent` 快捷项展开或收起完整 Agent 页面。收起只销毁界面并保存当前会话位置，不取消正在运行的请求、上下文压缩或等待确认的插件修改。
+- 临时会话发送首条用户消息后才写入历史。未产生用户对话就退出、切换或再次新建时，不生成历史记录，并清理该临时会话的附件和工具结果。
+- 已保存会话仍保留标题、排序、置顶、锁定、草稿、压缩摘要和工具记录；主动打开后可以继续原有上下文。
+- Agent 运行状态按会话独立保存。返回设置页、收到微信新消息或切换到其它会话都不会取消当前任务；页面只切换当前显示的会话，后台任务继续执行并持续保存自己的消息、工具事件和确认状态。
+- 多个会话可以同时运行。停止按钮只取消当前打开的会话；重新进入 Agent 时会优先恢复离开前正在查看的会话，后台完成或等待确认的结果不会丢失。
+- 插件文件确认、最终提交确认和压缩状态也归属具体会话。切换会话不会替另一个会话取消、确认或提交文件变更；删除正在运行的会话必须先停止任务。
+
+不支持原生 `tools` 的接口会自动退回兼容协议：工具调用仍使用旧的 JSON 状态字段，但工具准备文本不会进入聊天正文。接口拒绝 `tools` 时只重试一次兼容请求，不把错误响应当作搜索结果或工具结果。
+
+### 显示层事件
+
+聊天正文、思考、工作状态和工具事件是四种不同的数据：
+
+- `Working (耗时)` 是客户端请求状态，只在还没有正文时显示，不写入消息正文和上下文。
+- `reasoning_content`、`reasoning_details`、`thinking` 等字段是服务端实际返回的思考内容，单独折叠展示；客户端不伪造“正在分析需求”之类的思考。
+- 正文只接收当前 assistant 回合的增量，工具开始后当前回合结束，工具完成后新建后续 assistant 回合。
+- 工具调用单独显示名称、参数摘要、结果摘要、状态和耗时；详情页保留可复制的完整参数和结果。插件工作区的 `write_file` / `apply_patch` 是例外，只显示本次标准统一 diff，不展示调用参数、结果摘要或完整结果入口。开始、完成和取消时间会随会话保存，重开后不会把已完成工具重新显示成进行中。
+- 插件工作区进入“已暂存”和“已写入/已删除”状态时，各自追加并持久化为独立会话消息；提交失败也追加独立状态消息，均不改写模型已经输出的正文。真实提交成功后的代码快照记录在对应成功状态消息上。
+
+工具调用前的“准备调用工具”、兼容 JSON 的控制字段和联网进度不会短暂渲染成 assistant 正文，因此不会出现 `Working -> 正文 -> Working` 的闪回。
+
+### 工具协议
+
+原生路径使用标准 Chat Completions 结构：
+
+```json
+{
+  "role": "assistant",
+  "tool_calls": [
+    {"id": "call_x", "type": "function", "function": {"name": "...", "arguments": "{}"}}
+  ]
+}
+```
+
+工具结果使用：
+
+```json
+{"role": "tool", "tool_call_id": "call_x", "content": "..."}
+```
+
+`tool_call_id` 会保存在会话中。重新打开会话、编辑或重试前面的消息时，会清理不再属于当前分支的工具历史，避免把旧工具结果错接到新请求。
+
+当前客户端会接收同一响应中的全部工具调用，不再只执行第一个。联网能力分为关键词搜索 `hchat_web_search` 和指定 URL 正文读取 `hchat_web_fetch`；连续的联网搜索、网页读取和外部文件读取这类只读工具最多并行 3 个。插件工作区、DexKit、MCP 和其它无法确认无副作用的工具保持串行并作为顺序屏障。每个工具都有排队、执行阶段、结果保存、完成、失败和取消状态；没有可靠总量时只显示阶段，不伪造百分比。
+
+一轮 Agent 任务不设置固定的工具调用总次数上限，多文件修改、分页读取和多版本逆向可以持续执行到完成或用户主动停止。同一工具和参数允许再次执行，用于刷新状态、复核结果或重试非确定性操作；每次执行都生成独立工具事件。只有控制响应格式校正保留独立的有限重试。
+
+插件工作区提供 `list_files`、`read_file`、`search_files`、`create_directory`、`write_file`、`apply_patch`、`move_path`、`delete_path`、`restore_path`、`reset_workspace`、`delete_plugin`、`show_diff` 和 `workspace_status`。`read_file` 使用稳定行号和行内续读，`search_files` 支持正则、路径 glob、排除路径和前后文。`apply_patch` 使用 Codex 风格的 `*** Begin Patch` 协议，一次调用可新增、更新、移动或删除多个文件；全部区块先完成上下文和最终大小校验，再写入暂存区。补丁优先逐字符匹配，失败时只接受唯一的行首/行尾空白差异候选，并保留原文件的上下文行；存在多个候选时仍拒绝修改，避免改错代码块。`restore_path` 可撤销单个路径，`reset_workspace` 可丢弃整轮暂存修改，`show_diff` 返回标准统一 diff。每轮只允许绑定一个插件目录，所有路径限定在该目录的缓存副本内。重复调用签名包含工作区 revision，因此写操作后可以重新读取或搜索同一路径；工作区写操作不能并行。当前 revision 已通过 `workspace_status` 和完整 `show_diff(path=".")` 后，客户端会把模型的最终 `workspace_done`、`answer`、`ready` 或 `delete` 响应统一收束为待应用变更；即使模型随后返回了无法解析的收尾文本，也直接使用本地工作区校验结果进入待确认，不重新请求模型或重放工具。尚未完成本地校验时，格式异常重试不会写入协议历史或反复追加校正上下文；重试耗尽后仍会保留暂存 checkpoint，并明确提示继续任务。被客户端拒绝并要求重试的控制响应会从聊天中撤掉，不能累积成重复回复。快捷选项的“插件文件修改确认”设为“每次询问”时，每次 `write_file` / `apply_patch` 工具调用都会显示本次 Diff 并暂停，整轮结束后还会显示完整目录 Diff 供最终确认；关闭弹窗只会隐藏它，聊天页保留“待确认的插件修改”入口，明确取消才丢弃暂存副本。工具级和最终确认弹窗都可在确认前勾选“始终允许”，确认后立即保存该模式，本轮后续写入和最终提交也直接放行。设为“始终允许”时，工具写入和最终创建、修改或删除会在静态检查通过后直接提交，不再弹确认框。
+
+暂存工作区会随运行 checkpoint 保存路径、插件身份、基线、revision 以及 `workspace_status` / `show_diff` 的完成状态。API 或网络失败后保留最多 24 小时；“继续任务”沿用原 `turnId`、原用户消息和协议转录，校验后恢复同一个暂存区，不重复执行已经成功的工具或写入。若中断前当前 revision 已完成状态检查和完整 Diff，继续时直接恢复最终确认，不再依赖一次新的模型请求。恢复点过期、路径越界、内容不可读或状态无效时才丢弃并重新读取真实插件。新用户消息、“重新开始”、明确取消或成功提交会清理旧恢复点。同一会话仍可多次修改同一插件，每次确认提交后下一轮基于最新真实文件继续。模型连续返回无效结束状态时最多校正两次，仍未实际建立并校验本轮工作区就停止请求，不能无限闪烁重试。
+
+超过单页大小的工具结果会写入当前会话的 `Agent/tool-results/<sessionId>`，模型收到 `truncated=true`、`handle` 和 `nextOffset`，通过 `hchat.reverse.read_tool_result` 继续读取。聊天详情默认显示预览，用户可以加载并复制完整结果；创建会话分支时会复制对应结果文件，删除会话或删除消息时清理不再引用的结果。
+
+### 中断、重试和压缩
+
+- 停止按钮会取消当前会话的 HTTP、联网、MCP 和文件读取请求；返回页面或切换会话不会触发停止。
+- 已收到的正文、真实思考和已完成工具事件会保留，并将 assistant 消息标记为中断。
+- 如果中断发生在工具执行期间，对应工具事件也会标记为已中断并保留已有结果片段。
+- 模型请求尚未形成完整控制响应时没有执行新工具；发生短暂断流或 `408/425/429/5xx` 时，即使已经显示部分正文或思考，也会撤下这段不完整响应并使用同一请求自动退避重试最多 6 次，支持服务端数字秒格式的 `Retry-After`。重试不会追加协议记录或重放工具。
+- “继续任务”从最后一个已保存的模型/工具边界继续，不新增“继续任务”用户消息，也不删除之前的中断记录；“重新开始”才删除原分支结果并从原用户消息完整重跑。
+- 上下文压缩生成 Codex 风格的结构化交接摘要，固定保留当前目标、用户约束、已确认决策、插件与工作区状态、完成项、验证结果、关键 descriptor/路径/结果 handle、失败尝试、待办和最近上下文；不把思维链、`Working`、重复进度或客户端状态词写进摘要。
+- 压缩成功后，模型请求会用交接摘要替换压缩边界之前的聊天消息和原生工具协议历史，只发送摘要与边界后的新消息；本地可见聊天、Diff 和完整工具结果文件保持不变。后续重建工具历史也只读取未压缩消息，不能把旧工具结果重新注入。
+- 手动压缩在聊天尾部显示 `Working (耗时) · 正在压缩上下文`，自动压缩在模型请求前显示 `Working (耗时) · 正在自动压缩上下文`；压缩状态不写入消息正文，成功后显示估算的压缩前后 Token，失败则保留原边界和上下文。
+- 压缩期间停止按钮会取消当前会话的压缩请求；可以切换到其它会话，但当前会话不能同时发起新的生成。
+- 原生工具协议历史、工具参数和结果也计入 Token 估算，避免聊天正文较短但工具上下文很大时压缩阈值失真。
+- 模型请求把内置开发指南放在固定 system 前缀，固定前缀不包含构建版本号、联网开关或工具协议分支。会话另存一份不显示在聊天 UI 中的协议转录：用户消息、模型原始响应、函数调用、工具结果和运行状态更新只能追加，普通网络重试复用完全相同的请求前缀。
+- 会话切换、退出页面和进程恢复继续使用已落盘的协议转录；手动/自动压缩成功后以摘要开启新缓存周期。编辑重发、重新生成、删除或回滚历史消息以及创建对话分支会从保留的 UI 历史建立新周期，不会把被覆盖分支继续发给模型。旧会话缺少协议转录时首次请求从现有消息迁移，之后不再由 UI 消息重建。
+- 长按消息菜单按稳定的消息 ID 绑定目标，不保存打开菜单时的列表下标。编辑重发、重新生成、回滚、删除和创建分支会在后台重建工具协议历史并异步保存会话；大工具结果只恢复首个分页，不在主线程完整读取或同步 `fsync`。回滚缩短消息列表前还会取消正在执行的旧尾部滚动，并把列表定位到仍然存在的消息，避免滚动状态继续访问已经删除的消息位置。
+- 自动压缩的摘要、消息边界和新协议周期随同一个会话 checkpoint 保存；Token 估算会在已有转录之外补算本轮尚未追加的用户消息和附件。工具执行被停止或进程中断时，下次请求会先为缺失结果的函数调用补充“已中断”结果，不会自动重放可能带副作用的工具。
+
+### Operit 对照结论
+
+Operit 的主要优势不是某个动画，而是把回合、工具调用、工具结果、思考和摘要当作结构化事件，并在取消后继续保存事件。Hchat 已对齐回合 ID、工具父子关系、多工具队列、只读工具并行、阶段进度和结果续读；仍有差异的部分是工具级权限询问、子 Agent 编排和 Provider 专属 reasoning metadata。
+
+## 功能开发模板
+
+新增功能时复制这个结构，不要把业务逻辑写到 `hooks/api` 或 `loader`。
+
+代码语言原则：能用 Kotlin 写就尽量写 Kotlin；如果某段代码因为 Xposed、反射、DexKit、R8 或 Java 互调原因更适合 Java，就用 Java，不要硬转。
+
+### Directory
+
+简单功能使用单层目录：
+
+```text
+hooks/items/example/
+  ExampleFeature.kt
+  ExampleSettingsProvider.kt
+  ExampleSettings.kt
+```
+
+复杂功能按职责拆子包，入口类保持很薄：
+
+```text
+hooks/items/example/core/
+  ExampleFeature.kt            # 只注册设置、订阅、组装组件
+  ExampleSettings.kt           # 只读配置
+  ExampleState.kt              # 只放内存状态
+  ExampleCoordinator.kt        # 串联业务流程
+hooks/items/example/detect/    # 识别、解析、过滤
+hooks/items/example/action/    # 执行动作，例如发送消息、网络请求
+hooks/items/example/notify/    # Toast、系统通知、模板变量
+```
+
+不要把功能私有逻辑放进 `hooks/api`。只有多个功能都能复用、并且已经确认兼容的微信能力才放 API 层。
+
+设置 UI 不放在功能包里。新增功能的设置页面统一写到 `ui/miuix/MiuixSettingsPage.kt`，并从 `FeatureSettingsPage(...)` 按 `featureId()` 分发。
+
+主设置页已经内置 KSU 风格 Miuix 液态玻璃底部导航：实用、娱乐、插件、设置。不要为单个功能再做独立底部导航；功能详情页需要底部操作时使用统一的 `BottomActionBar`。
+
+当前页签归类：
+
+- `实用`: 红包、转账等日常工具，当前放 `AutoRedPacketFeature` 和 `AutoTransferFeature`。
+- `娱乐`: 消息/玩法类功能，当前暂无默认功能。
+- `插件`: 插件相关功能，例如脚本插件。
+- `设置`: 全局 UI 设置和关于信息。
+
+支付相关功能不要在业务包里重复找微信混淆类。普通转账领取/退回使用 `WeChatApis.payment().transfers()`，消息识别和规则判断可以放在功能包内。
+
+### Feature
+
+```kotlin
+package h.Hchat.hooks.items.example
+
+import h.Hchat.event.Events
+import h.Hchat.hooks.api.core.WeChatApis
+import h.Hchat.hooks.core.BaseFeature
+import h.Hchat.hooks.core.FeatureContext
+
+class ExampleFeature : BaseFeature() {
+    override fun featureId(): String = ID
+
+    override fun name(): String = "示例功能"
+
+    override fun onFeatureInit(context: FeatureContext) {
+        registerSettingsProvider(ExampleSettingsProvider())
+        subscribe(Events.MessageReceived::class.java) {
+            // lightweight event handling
+        }
+    }
+
+    @Throws(Throwable::class)
+    override fun onFeatureInstall(context: FeatureContext) {
+        if (!featureBoolean("enabled", true)) return
+        if (WeChatApis.message().observe() != null && WeChatApis.message().hasObserve()) {
+            trackSubscription(WeChatApis.message().observe().subscribe {
+                // API subscription, auto cleanup by BaseFeature
+            })
+        }
+    }
+
+    companion object {
+        const val ID = "example"
+    }
+}
+```
+
+### Settings Provider
+
+Provider 只提供入口元信息，不打开页面。
+
+```kotlin
+package h.Hchat.hooks.items.example
+
+import h.Hchat.ui.FeatureSettingsProvider
+import h.Hchat.ui.SimpleFeatureSettingsProvider
+
+class ExampleSettingsProvider : SimpleFeatureSettingsProvider(
+    ExampleFeature.ID,
+    "示例功能",
+    "一句话说明",
+    FeatureSettingsProvider.CATEGORY_ENHANCE
+)
+```
+
+不要实现或恢复 `showDetail(Context)`。不要在 Provider 中创建 `Dialog`、`AlertDialog`、`Activity` 或自定义悬浮 View。Provider 只保留 `featureId/title/subtitle/category`，不要重新加图标、颜色或旧 `UIEntry`。
+
+分类规则：
+
+- `FeatureSettingsProvider.CATEGORY_PRACTICAL`: 放到 `实用`
+- `FeatureSettingsProvider.CATEGORY_ENTERTAINMENT`: 放到 `娱乐`
+- `FeatureSettingsProvider.CATEGORY_ENHANCE`: 放到 `插件`
+
+三参数 `SimpleFeatureSettingsProvider(featureId, title, subtitle)` 默认放到 `插件`。不要在 `MiuixSettingsPage` 主页面里按功能 ID 写分组判断。
+
+### Miuix Settings Page
+
+在 `app/src/main/java/h/Hchat/ui/miuix/MiuixSettingsPage.kt` 的 `FeatureSettingsPage(...)` 添加分支：
+
+```kotlin
+@Composable
+private fun FeatureSettingsPage(
+    context: Context,
+    provider: FeatureSettingsProvider,
+    onBack: () -> Unit
+) {
+    when (provider.featureId()) {
+        ExampleFeature.ID -> ExampleMiuixPage(context, provider, onBack)
+        else -> UnsupportedFeaturePage(provider, onBack)
+    }
+}
+```
+
+页面模板：
+
+```kotlin
+@Composable
+private fun ExampleMiuixPage(
+    context: Context,
+    provider: FeatureSettingsProvider,
+    onBack: () -> Unit
+) {
+    val sp = remember { HchatStorage.preferences(context, "example_settings") }
+    var optionPicker by remember { mutableStateOf<OptionPickerRequest?>(null) }
+    var picker by remember { mutableStateOf<ContactPickerRequest?>(null) }
+    val listState = rememberLazyListState()
+    val scrollBehavior = MiuixScrollBehavior()
+
+    optionPicker?.let { request ->
+        OptionPickerPage(
+            request = request,
+            onBack = { optionPicker = null },
+            onSelected = { selected ->
+                request.onSelected(selected)
+                optionPicker = null
+            }
+        )
+        return
+    }
+
+    picker?.let { request ->
+        ContactPickerPage(
+            context = context,
+            request = request,
+            onBack = { picker = null },
+            onConfirm = { selected ->
+                request.onValue(selected.joinToString("|") { it.id })
+                picker = null
+            }
+        )
+        return
+    }
+
+    PageScaffold(
+        title = provider.title(),
+        largeTitle = provider.title(),
+        scrollBehavior = scrollBehavior,
+        bottomBar = {
+            BottomActionBar(
+                primaryText = "保存",
+                onPrimaryClick = {
+                    // write full form values here
+                    Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
+                },
+                secondaryText = "返回",
+                onSecondaryClick = onBack
+            )
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
+            state = listState,
+            contentPadding = PaddingValues(
+                top = padding.calculateTopPadding() + 8.dp,
+                bottom = padding.calculateBottomPadding() + 84.dp
+            )
+        ) {
+            item { SmallTitle(text = "功能") }
+            item {
+                SettingsCard {
+                    SwitchRow(sp, "enabled", "启用", "开启示例功能", true)
+                    InsetDivider()
+                    OptionRow(
+                        sp = sp,
+                        key = "mode",
+                        title = "模式",
+                        options = optionItems("模式一" to 0, "模式二" to 1),
+                        defaultValue = 0,
+                        openPicker = { optionPicker = it }
+                    )
+                    InsetDivider()
+                    ActionRow("选择联系人", "从好友或群聊列表选择") {
+                        picker = ContactPickerRequest(
+                            title = "选择联系人",
+                            mode = ContactPickerMode.BOTH,
+                            multiSelect = true,
+                            existingValue = "",
+                            onValue = { value ->
+                                sp.edit().putString("contacts", value).apply()
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+UI 规则：
+
+- 使用 `PageScaffold` + Compose `LazyColumn` + Miuix `SettingsCard` / rows。`PageScaffold` 负责 Miuix top app bar、backdrop 和 bottom bar。
+- 需要二级选择的配置用 `OptionRow`，不要点击一行就循环切换值。
+- 好友/群聊选择用 `ContactPickerPage`，它已经处理头像、头像进程内缓存、右侧选中框和完整列表点击。
+- 会跳转或选择的行使用现有 `ActionRow` / `OptionRow` / `ContactRow`，不要直接写普通 `Modifier.clickable`。
+- 所有页面都要给 `LazyColumn` 传 `rememberLazyListState()`，返回二级菜单时才能保持滚动位置。
+- `LazyColumn` 要加 `.nestedScroll(scrollBehavior.nestedScrollConnection)`，保证 Miuix 顶栏滚动行为一致。
+- 主设置页的 设置 tab 已有 `悬浮底栏` 和 `液态玻璃` 开关，值存在 `Hchat_miuix_ui`。不要在功能页重复做这些全局 UI 设置。
+- 新增功能配置统一使用 `HchatStorage.preferences(context, name)` 或 `ConfigStore`，文件位于微信私有目录 `Hchat/`，日常读写由 FastKV 负责。不要直接 `context.getSharedPreferences(...)` 或自行实例化 FastKV 写模块配置。
+- 主底栏实现位于 `ui/miuix/FloatingBottomBar.kt` 及其 `animation/`、`liquid/` 辅助文件。它使用 KSU 风格的多层 backdrop：普通内容层、隐藏主色 tint 层、移动选中液态胶囊。新增功能页不要改这套底栏状态或颜色机制。
+- 底栏图标是本地 `ImageVector`，路径来自 AndroidX Material Rounded。不要在微信内嵌 Compose UI 中使用 `vectorResource(R.drawable...)`。
+- 主功能列表不显示 Provider 图标，保持普通设置列表样式。图标只保留在底部导航。
+- 液态玻璃使用 compose-miuix-ui 的 `miuix-blur`。不要在功能页单独创建 blur/backdrop；统一复用 `PageScaffold` 的结构。
+- 液态玻璃只支持 Android 13 及以上；低版本必须回退普通底栏，不能构造 `RuntimeShader` 相关效果。
+- `layerBackdrop(...)` 只能包住页面内容层，底栏必须作为 overlay 放在内容层外。底栏玻璃由 `FloatingBottomBar` 内部的 `drawBackdrop(...)` / `lens(...)` 处理。不要把底栏放进被记录的 backdrop 层里。
+- 不要新增 Dialog，不要启动模块 Activity，不要加右上角关闭按钮。
+
+### Register
+
+Add one line in `FeatureRegistry`:
+
+```kotlin
+.register(ExampleFeature())
+```
+
+### Common Patterns
+
+订阅消息：
+
+```kotlin
+trackSubscription(WeChatApis.message().observe().subscribe { message ->
+    if (message.isText()) {
+        val talker = message.talker
+        val sender = message.sender
+        val content = message.content
+    }
+})
+```
+
+延迟、限频、防重复：
+
+```kotlin
+WeChatApis.runtime().tasks().runOnMainDelayed("example:$id", 1000) {
+    // delayed work
+}
+
+WeChatApis.runtime().tasks().runOnce("example_once:$id") {
+    // only once per key
+}
+
+WeChatApis.runtime().tasks().runThrottled("example_rate:$talker", 3000) {
+    // rate limited per talker
+}
+```
+
+安装 Xposed Hook：
+
+```kotlin
+HookRegistry.get().hook(method, object : XC_MethodHook() {
+    override fun afterHookedMethod(param: MethodHookParam) {
+        // hook body
+    }
+})
+```
+
+需要微信内部类：
+
+```text
+1. 先用 DexKit/DexClub 在目标版本确认类、方法、构造器。
+2. 把解析结果放进 DexFinder，并加版本/热更新缓存。
+3. 业务功能只消费 DexFinder 或 WeChatApis，不散落 findClass。
+4. 反射查找、类加载、实例创建和方法调用必须走 h.Hchat.utils.KavaReflector。
+5. 未确认的能力只写 supports/isAvailable，不写猜测实现。
+```
+
+KavaRef 约定：
+
+```kotlin
+val ctor = KavaReflector.findConstructor(clazz, String::class.java)
+val instance = KavaReflector.newInstance(ctor, value)
+val field = KavaReflector.readField(instance, "fieldName")
+```
+
+不要在新功能里直接散落 `getDeclared*`、`setAccessible`、`Constructor.newInstance`、`Class.forName` 或 `Method.invoke`。如果必须保留原始 `Method` / `Field` / `Constructor` 给 Xposed 或 DexKit，也必须由 `KavaReflector` 获取。
+
+`h/Hchat/compat/kavaref/**` 是 KavaRef core 的本地兼容层。目录在 Hchat 下，文件内部包名仍是 `com.highcapable.kavaref...`，不要改包名。
+
+运行时设置实时生效：
+
+```kotlin
+// Good: read current value when handling the event.
+if (!settings.getBoolean(ExampleSettings.KEY_ENABLE, true)) return
+
+// Good: if cached, refresh before event processing.
+settingsSnapshot.refresh()
+if (settingsSnapshot.skipCurrentEvent()) return
+
+// Good: settings page writes immediately when later runtime code depends on it.
+sp.edit().putBoolean(ExampleSettings.KEY_ENABLE, enabled).commit()
+```
+
+不要这样写：
+
+```kotlin
+// Bad: this value becomes stale after user saves settings.
+private var enabled = false
+
+fun hookAll() {
+    enabled = settings.getBoolean(ExampleSettings.KEY_ENABLE, true)
+}
+
+fun onEvent() {
+    if (!enabled) return
+}
+```
+
+### Rules
+
+- Use `BaseFeature` for lifecycle.
+- Use `registerSettingsProvider`, `subscribe`, and `trackSubscription` for cleanup.
+- Use `WeChatApis` before adding new DexKit logic.
+- Put new DexKit results into `DexFinder` only after verifying target WeChat versions by reverse engineering.
+- 新增反射代码使用 `KavaReflector`，不要直接散落原始 Java 反射。
+- Runtime logs should be quiet by default. Log failures, missing classes, or explicit debug output only.
+- Keep feature entry classes small. Put parsing, action, notification, and state into separate classes.
+- Do not use WA/WAuxiliary API.
+- Do not use Dialog/AlertDialog/module Activity for settings. All settings pages must be embedded Miuix pages under `MiuixSettingsPage.kt`.
+- Settings providers are metadata only. Do not add `showDetail(Context)`.
+- Use shared Miuix rows/pickers so tap handling, scroll-position retention, contact avatars, and right-side selection marks stay consistent.
+- All switches and editable settings must take effect immediately after saving. Do not require restarting WeChat for normal settings.
+- If settings are cached, refresh the cache before processing events or when the settings page saves.
+- If a WeChat internal detail is uncertain, reverse engineer first. Do not guess class names, method names, fields, database tables, intent extras, or request parameters.
+- Put every new file in the correct layer. Feature-specific code belongs in `hooks/items/<feature>/**`; only reusable verified WeChat APIs belong in `hooks/api/**`.
