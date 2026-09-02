@@ -1,0 +1,38 @@
+# Gradle / Android build outputs
+.gradle/
+.gradle-home/
+.kotlin/
+build/
+*/build/
+
+# Local machine configuration
+local.properties
+*.iml
+.idea/
+
+# Signing keys and secrets
+*.jks
+*.keystore
+*.p12
+*.pem
+app/keystore/
+
+# Generated artifacts
+dist/
+*.apk
+*.aab
+*.ap_
+*.class
+*.dex
+*.pyc
+__pycache__/
+tmp_bsh_repro.*
+reverse_case/
+
+# Runtime data and logs
+*.log
+*.kva
+*.tmp
+
+# Temporary media/test output
+tmp_video_frames/

@@ -1,0 +1,1803 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Hchat 插件管理</title>
+  <style nonce="__HCHAT_CSP_NONCE__">
+    :root {
+      color: #1f2328;
+      background: #f6f8fa;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      min-width: 320px;
+      margin: 0;
+      background: #f6f8fa;
+    }
+
+    button,
+    input {
+      font: inherit;
+      letter-spacing: 0;
+    }
+
+    button {
+      min-height: 40px;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      padding: 0 16px;
+      color: #24292f;
+      background: #ffffff;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #f3f4f6;
+    }
+
+    button:focus-visible,
+    input:focus-visible {
+      outline: 3px solid rgba(9, 105, 218, 0.25);
+      outline-offset: 1px;
+      border-color: #0969da;
+    }
+
+    button:disabled {
+      cursor: wait;
+      opacity: 0.6;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    .topbar {
+      border-bottom: 1px solid #d8dee4;
+      background: #ffffff;
+    }
+
+    .topbar-inner,
+    main {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+
+    .topbar-inner {
+      min-height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .account-menu {
+      position: relative;
+      flex: 0 0 auto;
+    }
+
+    .account-menu summary {
+      min-height: 40px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      padding: 0 14px;
+      color: #24292f;
+      background: #ffffff;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .account-menu summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .account-menu summary:hover {
+      background: #f3f4f6;
+    }
+
+    .account-menu summary:focus-visible {
+      outline: 3px solid rgba(9, 105, 218, 0.25);
+      outline-offset: 1px;
+      border-color: #0969da;
+    }
+
+    .account-chevron {
+      color: #57606a;
+      font-size: 12px;
+      transition: transform 140ms ease;
+    }
+
+    .account-menu[open] .account-chevron {
+      transform: rotate(180deg);
+    }
+
+    .account-dropdown {
+      position: absolute;
+      z-index: 30;
+      top: calc(100% + 8px);
+      right: 0;
+      width: min(360px, calc(100vw - 24px));
+      border: 1px solid #d8dee4;
+      border-radius: 8px;
+      padding: 8px;
+      background: #ffffff;
+      box-shadow: 0 12px 32px rgba(31, 35, 40, 0.18);
+    }
+
+    .account-action {
+      width: 100%;
+      border-color: transparent;
+      text-align: left;
+      background: transparent;
+    }
+
+    .account-action.danger {
+      color: #cf222e;
+    }
+
+    .account-password-editor {
+      margin: 6px 4px 8px;
+      border-top: 1px solid #d8dee4;
+      padding-top: 12px;
+    }
+
+    .account-password-form {
+      display: grid;
+      gap: 10px;
+    }
+
+    .account-password-form label {
+      margin-bottom: 5px;
+      font-size: 13px;
+    }
+
+    .account-password-form input {
+      height: 40px;
+    }
+
+    .account-password-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 2px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.3;
+      font-weight: 650;
+    }
+
+    main {
+      padding: 28px 0 48px;
+    }
+
+    .login-panel {
+      width: min(440px, 100%);
+      margin: 9vh auto 0;
+      border: 1px solid #d8dee4;
+      border-radius: 8px;
+      padding: 24px;
+      background: #ffffff;
+      box-shadow: 0 8px 24px rgba(140, 149, 159, 0.16);
+    }
+
+    h2 {
+      margin: 0 0 18px;
+      font-size: 18px;
+      line-height: 1.4;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      color: #57606a;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    input {
+      width: 100%;
+      min-width: 0;
+      height: 42px;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      padding: 0 12px;
+      color: #24292f;
+      background: #ffffff;
+    }
+
+    .login-actions {
+      margin-top: 16px;
+    }
+
+    .primary {
+      border-color: #1f883d;
+      color: #ffffff;
+      background: #1f883d;
+      font-weight: 600;
+    }
+
+    .primary:hover {
+      background: #1a7f37;
+    }
+
+    .login-actions .primary {
+      width: 100%;
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto auto;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+
+    .summary {
+      min-height: 24px;
+      margin: 0 0 10px;
+      color: #57606a;
+      font-size: 14px;
+    }
+
+    .bulk-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 0 0 12px;
+      border: 1px solid #d8dee4;
+      border-radius: 6px;
+      padding: 10px 12px;
+      background: #ffffff;
+    }
+
+    .bulk-select,
+    .plugin-select {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0;
+      color: #424a53;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .bulk-select input,
+    .plugin-select input {
+      width: 18px;
+      height: 18px;
+      margin: 0;
+      padding: 0;
+      accent-color: #0969da;
+    }
+
+    .settings-panel {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 18px;
+      border: 1px solid #d8dee4;
+      border-radius: 8px;
+      padding: 16px 18px;
+      background: #ffffff;
+    }
+
+    .settings-copy {
+      min-width: 0;
+    }
+
+    .settings-title {
+      margin: 0;
+      color: #24292f;
+      font-size: 16px;
+      line-height: 1.4;
+      font-weight: 650;
+    }
+
+    .settings-description {
+      margin: 5px 0 0;
+      color: #57606a;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .settings-control {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: center;
+      gap: 10px;
+      color: #57606a;
+      font-size: 14px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .switch {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      min-height: 32px;
+      margin-bottom: 0;
+      cursor: pointer;
+    }
+
+    .switch input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+    }
+
+    .switch-track {
+      position: relative;
+      display: inline-block;
+      width: 46px;
+      height: 26px;
+      border: 1px solid #afb8c1;
+      border-radius: 13px;
+      background: #eaeef2;
+      transition: background-color 140ms ease, border-color 140ms ease;
+    }
+
+    .switch-thumb {
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #ffffff;
+      box-shadow: 0 1px 3px rgba(31, 35, 40, 0.24);
+      transition: transform 140ms ease;
+    }
+
+    .switch input:checked + .switch-track {
+      border-color: #1f883d;
+      background: #1f883d;
+    }
+
+    .switch input:checked + .switch-track .switch-thumb {
+      transform: translateX(20px);
+    }
+
+    .switch input:focus-visible + .switch-track {
+      outline: 3px solid rgba(9, 105, 218, 0.25);
+      outline-offset: 2px;
+    }
+
+    .switch input:disabled + .switch-track {
+      cursor: wait;
+      opacity: 0.6;
+    }
+
+    .settings-message {
+      min-height: 20px;
+      margin: 8px 0 0;
+      color: #57606a;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .settings-message.success {
+      color: #1a7f37;
+    }
+
+    .message {
+      min-height: 22px;
+      margin: 14px 0 0;
+      color: #cf222e;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .message.success {
+      color: #1a7f37;
+    }
+
+    .plugin-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .blacklist-panel {
+      margin-bottom: 18px;
+      border: 1px solid #d8dee4;
+      border-radius: 8px;
+      padding: 16px 18px;
+      background: #ffffff;
+    }
+
+    .blacklist-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .blacklist-count {
+      color: #57606a;
+      font-size: 13px;
+    }
+
+    .blacklist-list {
+      display: grid;
+      gap: 0;
+      margin-top: 12px;
+      border: 1px solid #d8dee4;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .blacklist-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 14px;
+      padding: 12px;
+    }
+
+    .blacklist-row + .blacklist-row {
+      border-top: 1px solid #d8dee4;
+    }
+
+    .plugin-row {
+      display: grid;
+      gap: 16px;
+      border: 1px solid #d8dee4;
+      border-radius: 8px;
+      padding: 16px 18px;
+      background: #ffffff;
+    }
+
+    .plugin-main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
+      gap: 20px;
+      min-width: 0;
+    }
+
+    .plugin-main-actions,
+    .version-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .plugin-main-actions button,
+    .version-actions button {
+      min-width: 88px;
+    }
+
+    .version-toggle {
+      justify-self: start;
+      color: #0969da;
+      font-size: 14px;
+    }
+
+    .version-panel {
+      border-top: 1px solid #d8dee4;
+      padding-top: 14px;
+    }
+
+    .version-list {
+      display: grid;
+      gap: 0;
+      overflow: hidden;
+      border: 1px solid #d8dee4;
+      border-radius: 6px;
+    }
+
+    .version-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      min-width: 0;
+      padding: 14px;
+      background: #ffffff;
+    }
+
+    .version-row + .version-row {
+      border-top: 1px solid #d8dee4;
+    }
+
+    .version-heading {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .version-name {
+      overflow-wrap: anywhere;
+      color: #24292f;
+      font-size: 15px;
+      line-height: 1.4;
+      font-weight: 650;
+    }
+
+    .review-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      border: 1px solid #d0d7de;
+      border-radius: 999px;
+      padding: 0 8px;
+      color: #57606a;
+      background: #f6f8fa;
+      font-size: 12px;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .review-badge.pending {
+      border-color: #bf8700;
+      color: #7d4e00;
+      background: #fff8c5;
+    }
+
+    .review-badge.approved {
+      border-color: #1f883d;
+      color: #1a7f37;
+      background: #dafbe1;
+    }
+
+    .review-badge.rejected {
+      border-color: #cf222e;
+      color: #cf222e;
+      background: #ffebe9;
+    }
+
+    .version-meta,
+    .file-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px 14px;
+      margin-top: 6px;
+      color: #57606a;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .version-notes {
+      margin: 8px 0 0;
+      color: #424a53;
+      font-size: 14px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .version-detail {
+      margin-top: 12px;
+      border-top: 1px solid #d8dee4;
+      padding-top: 12px;
+    }
+
+    .version-detail-status {
+      margin: 0 0 10px;
+      color: #57606a;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .file-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .file-preview {
+      min-width: 0;
+      border: 1px solid #d8dee4;
+      border-radius: 6px;
+      padding: 12px;
+      background: #f6f8fa;
+    }
+
+    .file-name {
+      overflow-wrap: anywhere;
+      color: #24292f;
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .file-preview pre {
+      max-height: 360px;
+      margin: 10px 0 0;
+      overflow: auto;
+      border: 1px solid #d8dee4;
+      border-radius: 4px;
+      padding: 10px;
+      color: #24292f;
+      background: #ffffff;
+      font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      white-space: pre;
+      tab-size: 2;
+    }
+
+    .binary-meta {
+      margin: 10px 0 0;
+      color: #57606a;
+      font-size: 13px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    .plugin-name {
+      margin: 0;
+      overflow-wrap: anywhere;
+      font-size: 16px;
+      line-height: 1.4;
+      font-weight: 650;
+    }
+
+    .plugin-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 14px;
+      margin-top: 7px;
+      color: #57606a;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .plugin-notes {
+      margin: 9px 0 0;
+      color: #424a53;
+      font-size: 14px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .danger {
+      border-color: #cf222e;
+      color: #cf222e;
+      background: #ffffff;
+      font-weight: 600;
+    }
+
+    .danger:hover {
+      color: #ffffff;
+      background: #cf222e;
+    }
+
+    .empty {
+      border: 1px dashed #afb8c1;
+      border-radius: 8px;
+      padding: 42px 20px;
+      color: #57606a;
+      text-align: center;
+      background: #ffffff;
+    }
+
+    @media (max-width: 640px) {
+      .topbar-inner,
+      main {
+        width: min(100% - 24px, 1120px);
+      }
+
+      main {
+        padding-top: 18px;
+      }
+
+      .toolbar {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .toolbar input {
+        grid-column: 1 / -1;
+      }
+
+      .plugin-row {
+        gap: 14px;
+      }
+
+      .plugin-main,
+      .version-row,
+      .blacklist-row {
+        grid-template-columns: 1fr;
+        gap: 14px;
+      }
+
+      .plugin-main-actions,
+      .version-actions {
+        justify-content: flex-start;
+      }
+
+      .plugin-main-actions .danger {
+        width: 100%;
+      }
+
+      .settings-panel {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .settings-control {
+        width: 100%;
+        justify-content: space-between;
+      }
+
+      .bulk-toolbar {
+        align-items: stretch;
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <h1>Hchat 插件管理</h1>
+      <details id="accountMenu" class="account-menu" hidden>
+        <summary>账户 <span class="account-chevron" aria-hidden="true">⌄</span></summary>
+        <div class="account-dropdown">
+          <button id="passwordToggleButton" class="account-action" type="button" aria-expanded="false" aria-controls="passwordEditor">修改密码</button>
+          <div id="passwordEditor" class="account-password-editor" hidden>
+            <form id="passwordForm" class="account-password-form">
+              <div>
+                <label for="currentPassword">当前密码</label>
+                <input id="currentPassword" name="currentPassword" type="password" autocomplete="current-password" required maxlength="256">
+              </div>
+              <div>
+                <label for="newPassword">新密码</label>
+                <input id="newPassword" name="newPassword" type="password" autocomplete="new-password" required maxlength="256">
+              </div>
+              <div>
+                <label for="confirmPassword">确认新密码</label>
+                <input id="confirmPassword" name="confirmPassword" type="password" autocomplete="new-password" required maxlength="256">
+              </div>
+              <div class="account-password-actions">
+                <button id="passwordCancelButton" type="button">取消</button>
+                <button id="passwordButton" class="primary" type="submit">确认修改</button>
+              </div>
+            </form>
+            <p id="passwordMessage" class="settings-message" role="status" aria-live="polite"></p>
+          </div>
+          <button id="logoutButton" class="account-action danger" type="button">退出登录</button>
+        </div>
+      </details>
+    </div>
+  </header>
+
+  <main>
+    <section id="loginPanel" class="login-panel" hidden>
+      <h2>管理员登录</h2>
+      <form id="loginForm">
+        <label for="adminPassword">管理员密码</label>
+        <input id="adminPassword" name="adminPassword" type="password" autocomplete="current-password" required maxlength="256">
+        <div class="login-actions">
+          <button id="loginButton" class="primary" type="submit">登录</button>
+        </div>
+      </form>
+      <p id="loginMessage" class="message" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="managementPanel" hidden>
+      <section class="settings-panel" aria-labelledby="settingsTitle">
+        <div class="settings-copy">
+          <h2 id="settingsTitle" class="settings-title">插件上传审核</h2>
+          <p class="settings-description">开启后，新上传的插件版本需要审核通过才会出现在插件列表。</p>
+          <p id="settingsMessage" class="settings-message" role="status" aria-live="polite"></p>
+        </div>
+        <div class="settings-control">
+          <span id="uploadReviewLabel">关闭</span>
+          <label class="switch" for="uploadReviewEnabled">
+            <input id="uploadReviewEnabled" type="checkbox" role="switch" aria-label="插件上传审核" aria-describedby="settingsMessage">
+            <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+          </label>
+        </div>
+      </section>
+      <section class="blacklist-panel" aria-labelledby="blacklistTitle">
+        <div class="blacklist-heading">
+          <div>
+            <h2 id="blacklistTitle" class="settings-title">上传者黑名单</h2>
+            <p class="settings-description">被拉黑的 wxid 不能新建或更新插件。</p>
+          </div>
+          <span id="blacklistCount" class="blacklist-count">0 人</span>
+        </div>
+        <div id="blacklistList" class="blacklist-list" hidden></div>
+        <p id="blacklistMessage" class="settings-message" role="status" aria-live="polite"></p>
+      </section>
+      <form id="searchForm" class="toolbar" role="search">
+        <input id="searchInput" type="search" maxlength="100" placeholder="搜索插件、作者或上传者身份" aria-label="搜索插件">
+        <button class="primary" type="submit">搜索</button>
+        <button id="refreshButton" type="button">刷新</button>
+      </form>
+      <div class="bulk-toolbar">
+        <label class="bulk-select" for="selectAllPlugins">
+          <input id="selectAllPlugins" type="checkbox">
+          <span>全选当前筛选结果</span>
+        </label>
+        <button id="batchDeleteButton" class="danger" type="button" disabled>批量删除</button>
+      </div>
+      <p id="summary" class="summary" aria-live="polite"></p>
+      <div id="pluginList" class="plugin-list"></div>
+      <p id="managementMessage" class="message" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <script nonce="__HCHAT_CSP_NONCE__">
+    "use strict";
+
+    const loginPanel = document.getElementById("loginPanel");
+    const managementPanel = document.getElementById("managementPanel");
+    const loginForm = document.getElementById("loginForm");
+    const loginButton = document.getElementById("loginButton");
+    const adminPasswordInput = document.getElementById("adminPassword");
+    const loginMessage = document.getElementById("loginMessage");
+    const accountMenu = document.getElementById("accountMenu");
+    const passwordToggleButton = document.getElementById("passwordToggleButton");
+    const passwordEditor = document.getElementById("passwordEditor");
+    const passwordCancelButton = document.getElementById("passwordCancelButton");
+    const logoutButton = document.getElementById("logoutButton");
+    const searchForm = document.getElementById("searchForm");
+    const searchInput = document.getElementById("searchInput");
+    const refreshButton = document.getElementById("refreshButton");
+    const pluginList = document.getElementById("pluginList");
+    const summary = document.getElementById("summary");
+    const managementMessage = document.getElementById("managementMessage");
+    const uploadReviewEnabled = document.getElementById("uploadReviewEnabled");
+    const uploadReviewLabel = document.getElementById("uploadReviewLabel");
+    const settingsMessage = document.getElementById("settingsMessage");
+    const passwordForm = document.getElementById("passwordForm");
+    const currentPasswordInput = document.getElementById("currentPassword");
+    const newPasswordInput = document.getElementById("newPassword");
+    const confirmPasswordInput = document.getElementById("confirmPassword");
+    const passwordButton = document.getElementById("passwordButton");
+    const passwordMessage = document.getElementById("passwordMessage");
+    const blacklistList = document.getElementById("blacklistList");
+    const blacklistCount = document.getElementById("blacklistCount");
+    const blacklistMessage = document.getElementById("blacklistMessage");
+    const selectAllPlugins = document.getElementById("selectAllPlugins");
+    const batchDeleteButton = document.getElementById("batchDeleteButton");
+    const selectedPluginIds = new Set();
+    const blacklistedWxIds = new Set();
+    let currentPlugins = [];
+    const beijingTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23"
+    });
+
+    function setMessage(element, message, success) {
+      element.textContent = message || "";
+      element.classList.toggle("success", Boolean(success));
+    }
+
+    function showAuthenticated(authenticated) {
+      loginPanel.hidden = authenticated;
+      managementPanel.hidden = !authenticated;
+      accountMenu.hidden = !authenticated;
+      if (!authenticated) {
+        accountMenu.open = false;
+        passwordEditor.hidden = true;
+        passwordToggleButton.setAttribute("aria-expanded", "false");
+        passwordForm.reset();
+        setMessage(passwordMessage, "", false);
+        pluginList.replaceChildren();
+        blacklistList.replaceChildren();
+        blacklistList.hidden = true;
+        blacklistCount.textContent = "0 人";
+        currentPlugins = [];
+        selectedPluginIds.clear();
+        blacklistedWxIds.clear();
+        updateBulkControls();
+        summary.textContent = "";
+      }
+    }
+
+    function closePasswordEditor() {
+      passwordEditor.hidden = true;
+      passwordToggleButton.setAttribute("aria-expanded", "false");
+      passwordForm.reset();
+      setMessage(passwordMessage, "", false);
+    }
+
+    async function apiRequest(path, options) {
+      const response = await fetch(path, Object.assign({
+        credentials: "same-origin",
+        headers: {"Accept": "application/json"}
+      }, options || {}));
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) {
+        const error = new Error(payload.error && payload.error.message ? payload.error.message : "请求失败");
+        error.status = response.status;
+        throw error;
+      }
+      return payload.data;
+    }
+
+    function appendText(parent, className, text) {
+      const element = document.createElement("span");
+      element.className = className;
+      element.textContent = text;
+      parent.appendChild(element);
+    }
+
+    function formatBeijingTime(value) {
+      const date = new Date(value);
+      if (!value || Number.isNaN(date.getTime())) {
+        return value || "-";
+      }
+      const parts = {};
+      beijingTimeFormatter.formatToParts(date).forEach((part) => {
+        if (part.type !== "literal") {
+          parts[part.type] = part.value;
+        }
+      });
+      return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+    }
+
+    function uploaderDisplayName(uploader) {
+      if (uploader && uploader.uploaderNickname) {
+        return String(uploader.uploaderNickname);
+      }
+      if (uploader && uploader.uploaderWeChatId) {
+        return String(uploader.uploaderWeChatId);
+      }
+      if (uploader && uploader.uploaderWxId) {
+        return String(uploader.uploaderWxId);
+      }
+      return "未知上传者";
+    }
+
+    function appendUploaderMeta(meta, uploader, label) {
+      const prefix = label || "上传者";
+      appendText(meta, "", `${prefix}昵称：${uploader && uploader.uploaderNickname ? uploader.uploaderNickname : "未知"}`);
+      appendText(meta, "", `微信号：${uploader && uploader.uploaderWeChatId ? uploader.uploaderWeChatId : "未知"}`);
+      appendText(meta, "", `wxid：${uploader && uploader.uploaderWxId ? uploader.uploaderWxId : "未知"}`);
+    }
+
+    function updateBulkControls() {
+      const currentIds = currentPlugins.map((plugin) => plugin.pluginId);
+      const selectedCount = currentIds.filter((pluginId) => selectedPluginIds.has(pluginId)).length;
+      selectAllPlugins.checked = currentIds.length > 0 && selectedCount === currentIds.length;
+      selectAllPlugins.indeterminate = selectedCount > 0 && selectedCount < currentIds.length;
+      selectAllPlugins.disabled = currentIds.length === 0;
+      batchDeleteButton.disabled = selectedCount === 0;
+      batchDeleteButton.textContent = selectedCount > 0 ? `批量删除（${selectedCount}）` : "批量删除";
+    }
+
+    function isPendingVersion(version) {
+      const status = String(version && version.reviewStatus || "").toLowerCase();
+      return status === "pending" || status === "pending_review" || status === "awaiting_review";
+    }
+
+    function isPublishedVersion(version) {
+      return Boolean(version && version.isPublished);
+    }
+
+    function formatBytes(value) {
+      const bytes = Number(value);
+      if (!Number.isFinite(bytes) || bytes < 0) {
+        return "-";
+      }
+      if (bytes < 1024) {
+        return `${bytes} B`;
+      }
+      const units = ["KB", "MB", "GB"];
+      let size = bytes;
+      let unitIndex = -1;
+      do {
+        size /= 1024;
+        unitIndex += 1;
+      } while (size >= 1024 && unitIndex < units.length - 1);
+      return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+    }
+
+    function reviewStatusLabel(version) {
+      if (isPublishedVersion(version)) {
+        return {text: "当前版本", className: "approved"};
+      }
+      const status = String(version && version.reviewStatus || "").toLowerCase();
+      if (isPendingVersion(version)) {
+        return {text: "待审核", className: "pending"};
+      }
+      if (status === "approved" || status === "published") {
+        return {text: "已通过", className: "approved"};
+      }
+      if (status === "rejected") {
+        return {text: "已驳回", className: "rejected"};
+      }
+      return {text: version && version.reviewStatus ? String(version.reviewStatus) : "历史版本", className: ""};
+    }
+
+    function handleAuthenticationError(error) {
+      if (error.status !== 401 && error.status !== 403) {
+        return false;
+      }
+      showAuthenticated(false);
+      setMessage(loginMessage, "登录状态已失效，请重新登录", false);
+      return true;
+    }
+
+    function createStatusBadge(version) {
+      const status = reviewStatusLabel(version);
+      const badge = document.createElement("span");
+      badge.className = `review-badge${status.className ? ` ${status.className}` : ""}`;
+      badge.textContent = status.text;
+      return badge;
+    }
+
+    function renderBlacklist(items) {
+      blacklistList.replaceChildren();
+      blacklistedWxIds.clear();
+      items.forEach((item) => {
+        if (item && item.uploaderWxId) {
+          blacklistedWxIds.add(String(item.uploaderWxId));
+        }
+      });
+      blacklistCount.textContent = `${items.length} 人`;
+      blacklistList.hidden = items.length === 0;
+      const fragment = document.createDocumentFragment();
+      items.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "blacklist-row";
+        const details = document.createElement("div");
+        const name = document.createElement("div");
+        name.className = "version-name";
+        name.textContent = uploaderDisplayName(item);
+        details.appendChild(name);
+        const meta = document.createElement("div");
+        meta.className = "version-meta";
+        appendUploaderMeta(meta, item);
+        appendText(meta, "", `拉黑时间：${formatBeijingTime(item.blacklistedAt)}`);
+        details.appendChild(meta);
+        const removeButton = document.createElement("button");
+        removeButton.type = "button";
+        removeButton.textContent = "解除拉黑";
+        removeButton.addEventListener("click", () => unblacklistUploader(item, removeButton));
+        row.appendChild(details);
+        row.appendChild(removeButton);
+        fragment.appendChild(row);
+      });
+      blacklistList.appendChild(fragment);
+    }
+
+    async function loadBlacklist() {
+      setMessage(blacklistMessage, "正在加载黑名单...", false);
+      try {
+        const data = await apiRequest("/v1/admin/blacklist");
+        renderBlacklist(Array.isArray(data && data.items) ? data.items : []);
+        setMessage(blacklistMessage, "", false);
+        return true;
+      } catch (error) {
+        if (!handleAuthenticationError(error)) {
+          setMessage(blacklistMessage, error.message, false);
+        }
+        return false;
+      }
+    }
+
+    async function blacklistUploader(uploader, button) {
+      const wxid = uploader && uploader.uploaderWxId ? String(uploader.uploaderWxId) : "";
+      if (!wxid || blacklistedWxIds.has(wxid)) {
+        return;
+      }
+      if (!window.confirm(`确定拉黑上传者“${uploaderDisplayName(uploader)}”（${wxid}）吗？`)) {
+        return;
+      }
+      button.disabled = true;
+      setMessage(blacklistMessage, `正在拉黑 ${wxid}...`, false);
+      try {
+        await apiRequest("/v1/admin/blacklist", {
+          method: "POST",
+          headers: {"Accept": "application/json", "Content-Type": "application/json"},
+          body: JSON.stringify({
+            uploaderWxId: wxid,
+            uploaderWeChatId: uploader.uploaderWeChatId || "",
+            uploaderNickname: uploader.uploaderNickname || ""
+          })
+        });
+        await loadBlacklist();
+        renderPlugins(currentPlugins);
+        setMessage(blacklistMessage, `已拉黑 ${wxid}`, true);
+      } catch (error) {
+        button.disabled = false;
+        if (!handleAuthenticationError(error)) {
+          setMessage(blacklistMessage, error.message, false);
+        }
+      }
+    }
+
+    async function unblacklistUploader(uploader, button) {
+      const wxid = String(uploader.uploaderWxId || "");
+      if (!window.confirm(`确定解除“${uploaderDisplayName(uploader)}”（${wxid}）的拉黑吗？`)) {
+        return;
+      }
+      button.disabled = true;
+      setMessage(blacklistMessage, `正在解除 ${wxid}...`, false);
+      try {
+        await apiRequest(`/v1/admin/blacklist/${encodeURIComponent(wxid)}`, {method: "DELETE"});
+        await loadBlacklist();
+        renderPlugins(currentPlugins);
+        setMessage(blacklistMessage, `已解除 ${wxid}`, true);
+      } catch (error) {
+        button.disabled = false;
+        if (!handleAuthenticationError(error)) {
+          setMessage(blacklistMessage, error.message, false);
+        }
+      }
+    }
+
+    function extractVersionFiles(data) {
+      if (!data || typeof data !== "object") {
+        return [];
+      }
+      if (Array.isArray(data.files)) {
+        return data.files;
+      }
+      if (data.version && Array.isArray(data.version.files)) {
+        return data.version.files;
+      }
+      return [];
+    }
+
+    function renderVersionFiles(container, files) {
+      container.replaceChildren();
+      if (files.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "version-detail-status";
+        empty.textContent = "该版本没有可预览的文件";
+        container.appendChild(empty);
+        return;
+      }
+
+      const fileList = document.createElement("div");
+      fileList.className = "file-list";
+      files.forEach((file) => {
+        const preview = document.createElement("section");
+        preview.className = "file-preview";
+
+        const name = document.createElement("div");
+        name.className = "file-name";
+        name.textContent = file && file.name ? String(file.name) : "未命名文件";
+        preview.appendChild(name);
+
+        const meta = document.createElement("div");
+        meta.className = "file-meta";
+        appendText(meta, "", `大小：${formatBytes(file && file.size)}`);
+        appendText(meta, "", `SHA-256：${file && file.sha256 ? String(file.sha256) : "-"}`);
+        preview.appendChild(meta);
+
+        if (file && file.name === "main.java.bshs") {
+          const binaryNotice = document.createElement("p");
+          binaryNotice.className = "binary-meta";
+          binaryNotice.textContent = "加密快照仅显示文件信息，不展示二进制内容。";
+          preview.appendChild(binaryNotice);
+        } else {
+          const code = document.createElement("pre");
+          code.textContent = file && typeof file.content === "string" ? file.content : "";
+          code.setAttribute("aria-label", `${name.textContent} 内容`);
+          preview.appendChild(code);
+        }
+        fileList.appendChild(preview);
+      });
+      container.appendChild(fileList);
+    }
+
+    async function toggleVersionDetails(plugin, version, button, container) {
+      if (container.dataset.loaded === "true") {
+        const willShow = container.hidden;
+        container.hidden = !willShow;
+        button.textContent = willShow ? "收起内容" : "查看内容";
+        button.setAttribute("aria-expanded", String(willShow));
+        return;
+      }
+
+      button.disabled = true;
+      button.textContent = "加载中...";
+      container.hidden = false;
+      container.replaceChildren();
+      const status = document.createElement("p");
+      status.className = "version-detail-status";
+      status.textContent = "正在加载版本内容...";
+      container.appendChild(status);
+      try {
+        const data = await apiRequest(
+          `/v1/admin/plugins/${encodeURIComponent(plugin.pluginId)}/versions/${encodeURIComponent(version.versionId)}`
+        );
+        renderVersionFiles(container, extractVersionFiles(data));
+        container.dataset.loaded = "true";
+        button.textContent = "收起内容";
+        button.setAttribute("aria-expanded", "true");
+      } catch (error) {
+        container.replaceChildren();
+        const failure = document.createElement("p");
+        failure.className = "message";
+        failure.textContent = error.message;
+        container.appendChild(failure);
+        button.textContent = "重试查看";
+        if (handleAuthenticationError(error)) {
+          container.hidden = true;
+        }
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    function createVersionRow(plugin, version) {
+      const row = document.createElement("div");
+      row.className = "version-row";
+
+      const content = document.createElement("div");
+      const heading = document.createElement("div");
+      heading.className = "version-heading";
+      const name = document.createElement("span");
+      name.className = "version-name";
+      name.textContent = version.versionName || version.versionId || "未命名版本";
+      heading.appendChild(name);
+      heading.appendChild(createStatusBadge(version));
+      content.appendChild(heading);
+
+      const meta = document.createElement("div");
+      meta.className = "version-meta";
+      appendText(meta, "", `上传：${formatBeijingTime(version.createdAt)}`);
+      appendText(meta, "", `大小：${formatBytes(version.totalSize)}`);
+      appendText(meta, "", `版本 ID：${version.versionId || "-"}`);
+      appendUploaderMeta(meta, version);
+      content.appendChild(meta);
+
+      const notes = document.createElement("p");
+      notes.className = "version-notes";
+      notes.textContent = version.releaseNotes ? `更新说明：${version.releaseNotes}` : "更新说明：暂无";
+      content.appendChild(notes);
+
+      const detail = document.createElement("div");
+      detail.className = "version-detail";
+      detail.hidden = true;
+      content.appendChild(detail);
+
+      const actions = document.createElement("div");
+      actions.className = "version-actions";
+
+      const viewButton = document.createElement("button");
+      viewButton.type = "button";
+      viewButton.textContent = "查看内容";
+      viewButton.setAttribute("aria-expanded", "false");
+      viewButton.addEventListener("click", () => toggleVersionDetails(plugin, version, viewButton, detail));
+      actions.appendChild(viewButton);
+
+      if (version.uploaderWxId) {
+        const blacklistButton = document.createElement("button");
+        blacklistButton.type = "button";
+        blacklistButton.textContent = blacklistedWxIds.has(String(version.uploaderWxId))
+          ? "已拉黑"
+          : "拉黑上传者";
+        blacklistButton.disabled = blacklistedWxIds.has(String(version.uploaderWxId));
+        blacklistButton.addEventListener("click", () => blacklistUploader(version, blacklistButton));
+        actions.appendChild(blacklistButton);
+      }
+
+      if (isPendingVersion(version) && !isPublishedVersion(version)) {
+        const approveButton = document.createElement("button");
+        approveButton.className = "primary";
+        approveButton.type = "button";
+        approveButton.textContent = "通过审核";
+        approveButton.addEventListener("click", () => approveVersion(plugin, version, approveButton));
+        actions.appendChild(approveButton);
+
+        const rejectButton = document.createElement("button");
+        rejectButton.className = "danger";
+        rejectButton.type = "button";
+        rejectButton.textContent = "驳回";
+        rejectButton.addEventListener("click", () => deleteVersion(plugin, version, rejectButton, true));
+        actions.appendChild(rejectButton);
+      } else if (!isPublishedVersion(version)) {
+        const deleteButton = document.createElement("button");
+        deleteButton.className = "danger";
+        deleteButton.type = "button";
+        deleteButton.textContent = "删除版本";
+        deleteButton.addEventListener("click", () => deleteVersion(plugin, version, deleteButton, false));
+        actions.appendChild(deleteButton);
+      }
+
+      row.appendChild(content);
+      row.appendChild(actions);
+      return row;
+    }
+
+    function renderPlugins(items) {
+      pluginList.replaceChildren();
+      const pendingCount = items.reduce((count, plugin) => {
+        const versions = Array.isArray(plugin.versions) ? plugin.versions : [];
+        return count + versions.filter(isPendingVersion).length;
+      }, 0);
+      summary.textContent = pendingCount > 0
+        ? `共 ${items.length} 个插件，${pendingCount} 个版本待审核`
+        : `共 ${items.length} 个插件`;
+      if (items.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "没有找到插件";
+        pluginList.appendChild(empty);
+        updateBulkControls();
+        return;
+      }
+
+      const fragment = document.createDocumentFragment();
+      items.forEach((plugin) => {
+        const versions = Array.isArray(plugin.versions) ? plugin.versions : [];
+        const currentVersion = versions.find(isPublishedVersion) || null;
+        const pluginPendingCount = versions.filter(isPendingVersion).length;
+        const row = document.createElement("article");
+        row.className = "plugin-row";
+
+        const main = document.createElement("div");
+        main.className = "plugin-main";
+        const details = document.createElement("div");
+        const heading = document.createElement("div");
+        heading.className = "version-heading";
+        const name = document.createElement("h2");
+        name.className = "plugin-name";
+        name.textContent = plugin.displayName || plugin.sourcePluginId || plugin.pluginId;
+        heading.appendChild(name);
+        if (pluginPendingCount > 0) {
+          const pending = document.createElement("span");
+          pending.className = "review-badge pending";
+          pending.textContent = `${pluginPendingCount} 个待审核`;
+          heading.appendChild(pending);
+        }
+        details.appendChild(heading);
+
+        const meta = document.createElement("div");
+        meta.className = "plugin-meta";
+        appendText(meta, "", `目录：${plugin.sourcePluginId || "-"}`);
+        appendText(meta, "", `当前版本：${currentVersion && currentVersion.versionName ? currentVersion.versionName : "未发布"}`);
+        appendText(meta, "", `作者：${plugin.author || "未填写"}`);
+        appendText(meta, "", `下载：${Number(plugin.downloadCount || 0)}`);
+        appendText(meta, "", `更新：${formatBeijingTime(plugin.updatedAt)}`);
+        appendText(meta, "", `ID：${plugin.pluginId}`);
+        appendUploaderMeta(meta, plugin, "最近上传者");
+        details.appendChild(meta);
+
+        const notes = document.createElement("p");
+        notes.className = "plugin-notes";
+        notes.textContent = currentVersion && currentVersion.releaseNotes
+          ? `当前版本说明：${currentVersion.releaseNotes}`
+          : "当前版本说明：暂无";
+        details.appendChild(notes);
+
+        const mainActions = document.createElement("div");
+        mainActions.className = "plugin-main-actions";
+        const selectLabel = document.createElement("label");
+        selectLabel.className = "plugin-select";
+        const selectInput = document.createElement("input");
+        selectInput.type = "checkbox";
+        selectInput.checked = selectedPluginIds.has(plugin.pluginId);
+        selectInput.setAttribute("aria-label", `选择 ${name.textContent}`);
+        selectInput.addEventListener("change", () => {
+          if (selectInput.checked) {
+            selectedPluginIds.add(plugin.pluginId);
+          } else {
+            selectedPluginIds.delete(plugin.pluginId);
+          }
+          updateBulkControls();
+        });
+        const selectText = document.createElement("span");
+        selectText.textContent = "选择";
+        selectLabel.appendChild(selectInput);
+        selectLabel.appendChild(selectText);
+        mainActions.appendChild(selectLabel);
+        if (plugin.uploaderWxId) {
+          const blacklistButton = document.createElement("button");
+          blacklistButton.type = "button";
+          blacklistButton.textContent = blacklistedWxIds.has(String(plugin.uploaderWxId))
+            ? "已拉黑"
+            : "拉黑最近上传者";
+          blacklistButton.disabled = blacklistedWxIds.has(String(plugin.uploaderWxId));
+          blacklistButton.addEventListener("click", () => blacklistUploader(plugin, blacklistButton));
+          mainActions.appendChild(blacklistButton);
+        }
+        const deleteButton = document.createElement("button");
+        deleteButton.className = "danger";
+        deleteButton.type = "button";
+        deleteButton.textContent = "删除整个插件";
+        deleteButton.addEventListener("click", () => deletePlugin(plugin, deleteButton));
+        mainActions.appendChild(deleteButton);
+        main.appendChild(details);
+        main.appendChild(mainActions);
+        row.appendChild(main);
+
+        const toggleButton = document.createElement("button");
+        toggleButton.className = "version-toggle";
+        toggleButton.type = "button";
+        toggleButton.textContent = `展开历史版本（${versions.length}）`;
+        toggleButton.setAttribute("aria-expanded", "false");
+        row.appendChild(toggleButton);
+
+        const versionPanel = document.createElement("div");
+        versionPanel.className = "version-panel";
+        versionPanel.hidden = pluginPendingCount === 0;
+        const versionList = document.createElement("div");
+        versionList.className = "version-list";
+        if (versions.length === 0) {
+          const noVersions = document.createElement("div");
+          noVersions.className = "empty";
+          noVersions.textContent = "暂无版本记录";
+          versionList.appendChild(noVersions);
+        } else {
+          versions.forEach((version) => versionList.appendChild(createVersionRow(plugin, version)));
+        }
+        versionPanel.appendChild(versionList);
+        row.appendChild(versionPanel);
+
+        if (pluginPendingCount > 0) {
+          toggleButton.textContent = `收起历史版本（${versions.length}）`;
+          toggleButton.setAttribute("aria-expanded", "true");
+        }
+
+        toggleButton.addEventListener("click", () => {
+          const willShow = versionPanel.hidden;
+          versionPanel.hidden = !willShow;
+          toggleButton.textContent = willShow
+            ? `收起历史版本（${versions.length}）`
+            : `展开历史版本（${versions.length}）`;
+          toggleButton.setAttribute("aria-expanded", String(willShow));
+        });
+        fragment.appendChild(row);
+      });
+      pluginList.appendChild(fragment);
+      updateBulkControls();
+    }
+
+    async function loadSettings() {
+      uploadReviewEnabled.disabled = true;
+      setMessage(settingsMessage, "正在加载设置...", false);
+      try {
+        const data = await apiRequest("/v1/admin/settings");
+        uploadReviewEnabled.checked = Boolean(data && data.uploadReviewEnabled);
+        uploadReviewLabel.textContent = uploadReviewEnabled.checked ? "已开启" : "已关闭";
+        setMessage(settingsMessage, "", false);
+        return true;
+      } catch (error) {
+        if (!handleAuthenticationError(error)) {
+          setMessage(settingsMessage, error.message, false);
+        }
+        return false;
+      } finally {
+        uploadReviewEnabled.disabled = false;
+      }
+    }
+
+    async function loadPlugins() {
+      refreshButton.disabled = true;
+      setMessage(managementMessage, "正在加载...", false);
+      const parameters = new URLSearchParams({q: searchInput.value.trim(), limit: "100"});
+      try {
+        const data = await apiRequest(`/v1/admin/plugins?${parameters.toString()}`);
+        currentPlugins = Array.isArray(data && data.items) ? data.items : [];
+        const currentIds = new Set(currentPlugins.map((plugin) => plugin.pluginId));
+        Array.from(selectedPluginIds).forEach((pluginId) => {
+          if (!currentIds.has(pluginId)) {
+            selectedPluginIds.delete(pluginId);
+          }
+        });
+        renderPlugins(currentPlugins);
+        setMessage(managementMessage, "", false);
+      } catch (error) {
+        if (!handleAuthenticationError(error)) {
+          setMessage(managementMessage, error.message, false);
+        }
+      } finally {
+        refreshButton.disabled = false;
+      }
+    }
+
+    async function loadManagement() {
+      const settingsLoaded = await loadSettings();
+      if (settingsLoaded && !managementPanel.hidden) {
+        await loadBlacklist();
+        if (!managementPanel.hidden) {
+          await loadPlugins();
+        }
+      }
+    }
+
+    async function approveVersion(plugin, version, button) {
+      const versionName = version.versionName || version.versionId;
+      button.disabled = true;
+      setMessage(managementMessage, `正在通过 ${versionName}...`, false);
+      try {
+        await apiRequest(
+          `/v1/admin/plugins/${encodeURIComponent(plugin.pluginId)}/versions/${encodeURIComponent(version.versionId)}/approve`,
+          {method: "POST"}
+        );
+        await loadPlugins();
+        setMessage(managementMessage, `已通过版本 ${versionName}`, true);
+      } catch (error) {
+        button.disabled = false;
+        if (!handleAuthenticationError(error)) {
+          setMessage(managementMessage, error.message, false);
+        }
+      }
+    }
+
+    async function deleteVersion(plugin, version, button, isRejection) {
+      const versionName = version.versionName || version.versionId;
+      const prompt = isRejection
+        ? `确定驳回版本“${versionName}”吗？驳回后该版本将被永久删除。`
+        : `确定永久删除历史版本“${versionName}”吗？`;
+      if (!window.confirm(prompt)) {
+        return;
+      }
+      button.disabled = true;
+      setMessage(managementMessage, `正在${isRejection ? "驳回" : "删除"} ${versionName}...`, false);
+      try {
+        await apiRequest(
+          `/v1/admin/plugins/${encodeURIComponent(plugin.pluginId)}/versions/${encodeURIComponent(version.versionId)}`,
+          {method: "DELETE"}
+        );
+        await loadPlugins();
+        setMessage(managementMessage, isRejection ? `已驳回版本 ${versionName}` : `已删除版本 ${versionName}`, true);
+      } catch (error) {
+        button.disabled = false;
+        if (!handleAuthenticationError(error)) {
+          setMessage(managementMessage, error.message, false);
+        }
+      }
+    }
+
+    async function deletePlugin(plugin, button) {
+      const displayName = plugin.displayName || plugin.sourcePluginId || plugin.pluginId;
+      if (!window.confirm(`确定删除“${displayName}”吗？`)) {
+        return;
+      }
+      if (!window.confirm("删除后所有历史版本都将永久移除，请再次确认。")) {
+        return;
+      }
+      button.disabled = true;
+      setMessage(managementMessage, `正在删除 ${displayName}...`, false);
+      try {
+        await apiRequest(`/v1/plugins/${encodeURIComponent(plugin.pluginId)}`, {method: "DELETE"});
+        await loadPlugins();
+        setMessage(managementMessage, `已删除 ${displayName}`, true);
+      } catch (error) {
+        button.disabled = false;
+        if (!handleAuthenticationError(error)) {
+          setMessage(managementMessage, error.message, false);
+        }
+      }
+    }
+
+    async function batchDeletePlugins() {
+      const pluginIds = currentPlugins
+        .map((plugin) => plugin.pluginId)
+        .filter((pluginId) => selectedPluginIds.has(pluginId));
+      if (pluginIds.length === 0) {
+        return;
+      }
+      if (!window.confirm(`确定永久删除选中的 ${pluginIds.length} 个插件及其全部历史版本吗？`)) {
+        return;
+      }
+      batchDeleteButton.disabled = true;
+      selectAllPlugins.disabled = true;
+      setMessage(managementMessage, `正在批量删除 ${pluginIds.length} 个插件...`, false);
+      try {
+        const result = await apiRequest("/v1/admin/plugins/batch-delete", {
+          method: "POST",
+          headers: {"Accept": "application/json", "Content-Type": "application/json"},
+          body: JSON.stringify({pluginIds})
+        });
+        selectedPluginIds.clear();
+        await loadPlugins();
+        const deletedCount = Number(result && result.deletedCount || 0);
+        const failedCount = Number(result && result.failedCount || 0);
+        setMessage(
+          managementMessage,
+          failedCount > 0
+            ? `已删除 ${deletedCount} 个，${failedCount} 个未删除`
+            : `已删除 ${deletedCount} 个插件`,
+          failedCount === 0
+        );
+      } catch (error) {
+        if (!handleAuthenticationError(error)) {
+          setMessage(managementMessage, error.message, false);
+        }
+      } finally {
+        updateBulkControls();
+      }
+    }
+
+    uploadReviewEnabled.addEventListener("change", async () => {
+      const requestedValue = uploadReviewEnabled.checked;
+      uploadReviewEnabled.disabled = true;
+      uploadReviewLabel.textContent = requestedValue ? "开启中" : "关闭中";
+      setMessage(settingsMessage, "正在保存设置...", false);
+      try {
+        const data = await apiRequest("/v1/admin/settings", {
+          method: "POST",
+          headers: {"Accept": "application/json", "Content-Type": "application/json"},
+          body: JSON.stringify({uploadReviewEnabled: requestedValue})
+        });
+        uploadReviewEnabled.checked = data && typeof data.uploadReviewEnabled === "boolean"
+          ? data.uploadReviewEnabled
+          : requestedValue;
+        uploadReviewLabel.textContent = uploadReviewEnabled.checked ? "已开启" : "已关闭";
+        setMessage(settingsMessage, "设置已保存", true);
+        await loadPlugins();
+      } catch (error) {
+        uploadReviewEnabled.checked = !requestedValue;
+        uploadReviewLabel.textContent = uploadReviewEnabled.checked ? "已开启" : "已关闭";
+        if (!handleAuthenticationError(error)) {
+          setMessage(settingsMessage, error.message, false);
+        }
+      } finally {
+        uploadReviewEnabled.disabled = false;
+      }
+    });
+
+    passwordForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const currentPassword = currentPasswordInput.value;
+      const newPassword = newPasswordInput.value;
+      const confirmPassword = confirmPasswordInput.value;
+      if (newPassword !== confirmPassword) {
+        setMessage(passwordMessage, "两次输入的新密码不一致", false);
+        confirmPasswordInput.focus();
+        return;
+      }
+      const controls = [
+        currentPasswordInput,
+        newPasswordInput,
+        confirmPasswordInput,
+        passwordButton
+      ];
+      controls.forEach((control) => { control.disabled = true; });
+      setMessage(passwordMessage, "正在修改密码...", false);
+      try {
+        await apiRequest("/v1/admin/password", {
+          method: "POST",
+          headers: {"Accept": "application/json", "Content-Type": "application/json"},
+          body: JSON.stringify({currentPassword, newPassword, confirmPassword})
+        });
+        passwordForm.reset();
+        showAuthenticated(false);
+        setMessage(loginMessage, "密码已修改，请使用新密码重新登录", true);
+        adminPasswordInput.focus();
+      } catch (error) {
+        passwordForm.reset();
+        if (!handleAuthenticationError(error)) {
+          setMessage(passwordMessage, error.message, false);
+          currentPasswordInput.focus();
+        }
+      } finally {
+        controls.forEach((control) => { control.disabled = false; });
+      }
+    });
+
+    passwordToggleButton.addEventListener("click", () => {
+      const opening = passwordEditor.hidden;
+      if (!opening) {
+        closePasswordEditor();
+        return;
+      }
+      passwordEditor.hidden = false;
+      passwordToggleButton.setAttribute("aria-expanded", "true");
+      currentPasswordInput.focus();
+    });
+
+    passwordCancelButton.addEventListener("click", closePasswordEditor);
+
+    accountMenu.addEventListener("toggle", () => {
+      if (!accountMenu.open) closePasswordEditor();
+    });
+
+    document.addEventListener("click", (event) => {
+      if (accountMenu.open && !accountMenu.contains(event.target)) {
+        accountMenu.open = false;
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && accountMenu.open) {
+        accountMenu.open = false;
+        accountMenu.querySelector("summary").focus();
+      }
+    });
+
+    loginForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      loginButton.disabled = true;
+      setMessage(loginMessage, "正在登录...", false);
+      const adminPassword = adminPasswordInput.value;
+      try {
+        await apiRequest("/v1/admin/session", {
+          method: "POST",
+          headers: {"Accept": "application/json", "Content-Type": "application/json"},
+          body: JSON.stringify({adminPassword})
+        });
+        adminPasswordInput.value = "";
+        setMessage(loginMessage, "", false);
+        showAuthenticated(true);
+        await loadManagement();
+      } catch (error) {
+        adminPasswordInput.value = "";
+        setMessage(loginMessage, error.message, false);
+        adminPasswordInput.focus();
+      } finally {
+        loginButton.disabled = false;
+      }
+    });
+
+    searchForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      loadPlugins();
+    });
+
+    refreshButton.addEventListener("click", loadManagement);
+
+    selectAllPlugins.addEventListener("change", () => {
+      currentPlugins.forEach((plugin) => {
+        if (selectAllPlugins.checked) {
+          selectedPluginIds.add(plugin.pluginId);
+        } else {
+          selectedPluginIds.delete(plugin.pluginId);
+        }
+      });
+      renderPlugins(currentPlugins);
+    });
+
+    batchDeleteButton.addEventListener("click", batchDeletePlugins);
+
+    logoutButton.addEventListener("click", async () => {
+      logoutButton.disabled = true;
+      try {
+        await apiRequest("/v1/admin/session", {method: "DELETE"});
+      } catch (error) {
+        setMessage(loginMessage, error.message, false);
+      } finally {
+        logoutButton.disabled = false;
+        showAuthenticated(false);
+        adminPasswordInput.focus();
+      }
+    });
+
+    async function initialize() {
+      try {
+        const session = await apiRequest("/v1/admin/session");
+        showAuthenticated(Boolean(session.authenticated));
+        if (session.authenticated) {
+          await loadManagement();
+        } else {
+          adminPasswordInput.focus();
+        }
+      } catch (error) {
+        showAuthenticated(false);
+        setMessage(loginMessage, error.message, false);
+      }
+    }
+
+    initialize();
+  </script>
+</body>
+</html>

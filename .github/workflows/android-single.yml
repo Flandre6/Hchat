@@ -1,0 +1,204 @@
+name: 安卓单频道构建
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  HCAT_SINGLE_VERSION_NAME_BASE: "5.5.6"
+  HCAT_SINGLE_VERSION_CODE_BASE: "490"
+  HCAT_SINGLE_RUN_NUMBER_BASE: "294"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 拉取当前频道代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 配置 JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: 配置 Gradle 缓存
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-cleanup: always
+          cache-read-only: false
+          validate-wrappers: false
+
+      - name: 配置 Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: 准备单频道构建配置
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+
+          current_branch="${GITHUB_REF_NAME}"
+          if [ "$current_branch" = "alt-entry" ]; then
+            apk_name="Hchat-alt-entry-release-signed.apk"
+          else
+            apk_name="Hchat-release-signed.apk"
+          fi
+
+          latest_semver="$(
+            {
+              printf 'v%s\n' "$HCAT_SINGLE_VERSION_NAME_BASE"
+              gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" --jq '.[].tag_name' || true
+              git ls-remote --tags origin 'refs/tags/v*' | sed 's#.*refs/tags/##; s#\^{}##' || true
+            } \
+              | sed -n 's/^v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' \
+              | sort -V \
+              | tail -n 1
+          )"
+          if [ -z "$latest_semver" ]; then
+            latest_semver="1.0.0"
+          fi
+
+          bump_version() {
+            current="$1"
+            major="${current%%.*}"
+            rest="${current#*.}"
+            minor="${rest%%.*}"
+            patch="${rest##*.}"
+
+            patch=$((patch + 1))
+            if [ "$patch" -gt 9 ]; then
+              minor=$((minor + patch / 10))
+              patch=$((patch % 10))
+            fi
+            if [ "$minor" -gt 9 ]; then
+              major=$((major + minor / 10))
+              minor=$((minor % 10))
+            fi
+            printf '%s.%s.%s\n' "$major" "$minor" "$patch"
+          }
+
+          version_name="$(bump_version "$latest_semver")"
+          while gh release view "v${version_name}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || git ls-remote --exit-code --tags origin "refs/tags/v${version_name}" >/dev/null 2>&1; do
+            version_name="$(bump_version "$version_name")"
+          done
+
+          version_code=$((
+            HCAT_SINGLE_VERSION_CODE_BASE +
+            GITHUB_RUN_NUMBER -
+            HCAT_SINGLE_RUN_NUMBER_BASE
+          ))
+          if [ "$version_code" -le "$HCAT_SINGLE_VERSION_CODE_BASE" ] \
+            || [ "$version_code" -gt 2147483647 ]; then
+            echo "单频道构建版本 Code 超出有效范围: ${version_code}"
+            exit 1
+          fi
+
+          echo "HCAT_VERSION_NAME=${version_name}" >> "$GITHUB_ENV"
+          echo "HCAT_VERSION_CODE=${version_code}" >> "$GITHUB_ENV"
+          echo "HCAT_RELEASE_TAG=v${version_name}" >> "$GITHUB_ENV"
+          echo "HCAT_RELEASE_TITLE=${version_name}" >> "$GITHUB_ENV"
+          echo "HCAT_APK_NAME=${apk_name}" >> "$GITHUB_ENV"
+
+          git fetch --force --tags origin 'refs/tags/v*:refs/tags/v*' >/dev/null 2>&1 || true
+          previous_change_tag="$(
+            git tag --merged HEAD --list 'v*' \
+              | sed -n 's/^v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/v\1/p' \
+              | sort -V \
+              | tail -n 1
+          )"
+          if [ -n "$previous_change_tag" ]; then
+            change_log="$(git log "${previous_change_tag}..HEAD" --pretty=format:'- %s' || true)"
+          else
+            change_log="$(git log HEAD --pretty=format:'- %s' -n 50 || true)"
+          fi
+          if [ -z "$change_log" ]; then
+            change_log="- 本次构建没有新的提交变更"
+          fi
+          {
+            echo "HCAT_CHANGE_LOG<<HCAT_CHANGE_LOG_EOF"
+            printf '%s\n' "$change_log"
+            echo "HCAT_CHANGE_LOG_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: 准备源码构建配置
+        run: |
+          set -e
+          sed -i '/android.aapt2FromMavenOverride/d' gradle.properties
+
+      - name: 还原签名证书
+        env:
+          HCAT_KEYSTORE_BASE64: ${{ secrets.HCAT_KEYSTORE_BASE64 }}
+        run: |
+          set -e
+          if [ -z "$HCAT_KEYSTORE_BASE64" ]; then
+            echo "Missing secret: HCAT_KEYSTORE_BASE64"
+            exit 1
+          fi
+          mkdir -p app/keystore
+          echo "$HCAT_KEYSTORE_BASE64" | base64 -d > app/keystore/。。.jks
+
+      - name: 构建当前频道 APK
+        env:
+          HCAT_APK_NAME: ${{ env.HCAT_APK_NAME }}
+          HCAT_STORE_PASSWORD: ${{ secrets.HCAT_STORE_PASSWORD }}
+          HCAT_KEY_ALIAS: ${{ secrets.HCAT_KEY_ALIAS }}
+          HCAT_KEY_PASSWORD: ${{ secrets.HCAT_KEY_PASSWORD }}
+        run: sh ./gradlew :app:assembleRelease --build-cache --parallel --no-watch-fs -x lintVitalAnalyzeRelease
+
+      - name: 上传 APK 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hchat-single-release
+          path: dist/${{ env.HCAT_APK_NAME }}
+
+      - name: 发布单频道发行版
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          tag="${HCAT_RELEASE_TAG}"
+          title="${HCAT_RELEASE_TITLE}"
+          apk_path="dist/${HCAT_APK_NAME}"
+
+          notes_file="$(mktemp)"
+          printf '%s\n' "${HCAT_CHANGE_LOG}" > "$notes_file"
+
+          gh release create "$tag" \
+            "${apk_path}#${HCAT_APK_NAME}" \
+            --title "$title" \
+            --notes-file "$notes_file" \
+            --target "${GITHUB_REF_NAME}" \
+            --latest
+
+      - name: 推送 Telegram 私聊安装包
+        if: ${{ success() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          set -e
+          if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
+            echo "未配置 Telegram secrets，跳过推送"
+            exit 0
+          fi
+          caption="$(
+            printf 'Hchat %s\n\n更新说明:\n%s' \
+              "${HCAT_RELEASE_TITLE}" \
+              "${HCAT_CHANGE_LOG}"
+          )"
+          caption="$(printf '%s' "$caption" | awk 'BEGIN { limit = 1024 } { if (length(out) == 0) out = $0; else out = out "\n" $0 } END { if (length(out) > limit) out = substr(out, 1, limit - 3) "..."; print out }')"
+
+          curl -fsS "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+            -F chat_id="${TG_CHAT_ID}" \
+            -F caption="${caption}" \
+            -F document=@"dist/${HCAT_APK_NAME}" >/dev/null
