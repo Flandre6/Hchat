@@ -99,6 +99,9 @@ private class MessageBubbleRenderer(
         return runCatching {
             HookRegistry.get().hook(method, object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
+                    if (!prefs.getBoolean(MessageBubbleSettings.KEY_ENABLE, MessageBubbleSettings.DEFAULT_ENABLE)) {
+                        return
+                    }
                     val state = captureBindState(param.args)
                     state.root?.let(::restoreBoundBubble)
                     val stack = bindStates.get() ?: ArrayDeque<BindState>().also(bindStates::set)
@@ -106,6 +109,9 @@ private class MessageBubbleRenderer(
                 }
 
                 override fun afterHookedMethod(param: MethodHookParam) {
+                    if (!prefs.getBoolean(MessageBubbleSettings.KEY_ENABLE, MessageBubbleSettings.DEFAULT_ENABLE)) {
+                        return
+                    }
                     val stack = bindStates.get()
                     val state = stack?.pollLast() ?: return
                     if (stack.isEmpty()) bindStates.remove()
@@ -138,6 +144,7 @@ private class MessageBubbleRenderer(
     }
 
     private fun applyBubble(args: Array<Any?>?, state: BindState) {
+        if (!prefs.getBoolean(MessageBubbleSettings.KEY_ENABLE, MessageBubbleSettings.DEFAULT_ENABLE)) return
         val root = state.root ?: return
         val message = resolveNativeMessageFromArgs(args)
         val messageType = message?.let {
@@ -171,8 +178,6 @@ private class MessageBubbleRenderer(
             messageContent
         )
         if (targets.isEmpty()) return
-        if (!prefs.getBoolean(MessageBubbleSettings.KEY_ENABLE, MessageBubbleSettings.DEFAULT_ENABLE)) return
-
         val messageOutgoing = message?.let {
             parseInt(readMessageValue(it, "getIsSend", "field_isSend", "isSend"))?.let { value -> value != 0 }
         }

@@ -85,6 +85,9 @@ private class HideChatAvatarRuntime(
     }
 
     private fun applyVisibility(args: Array<Any?>?) {
+        if (!prefs.getBoolean(HideChatAvatarSettings.KEY_HIDE_SELF, HideChatAvatarSettings.DEFAULT_HIDE_SELF) &&
+            !prefs.getBoolean(HideChatAvatarSettings.KEY_HIDE_OTHER, HideChatAvatarSettings.DEFAULT_HIDE_OTHER)
+        ) return
         if (args == null || args.size != 4) return
         val message = args.firstOrNull { it != null && isMessageClass(it.javaClass) } ?: return
         val outgoing = resolveOutgoing(args[2] as? String, message) ?: return

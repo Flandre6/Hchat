@@ -121,6 +121,8 @@ private class ChatTimeStyleRuntime(
 
     private fun bindTime(args: Array<Any?>?) {
         val mode = currentMode()
+        // 原始模式不改变微信行为，直接跳过高频消息绑定路径。
+        if (mode == ChatTimeStyleSettings.MODE_ORIGINAL) return
         val holder = messageHolder(args) ?: return
         val root = findRootView(holder) ?: return
         val taggedHolder = root.tag ?: holder

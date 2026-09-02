@@ -113,11 +113,10 @@ private class MessageTextColorRenderer(
         if (args.size < 2) return
         val holder = args[0] ?: return
         val position = args[1] as? Int ?: return
-        val root = findRootView(holder) ?: return
         if (!isEnabled()) {
-            clearBinding(root)
             return
         }
+        val root = findRootView(holder) ?: return
 
         val adapter = param.thisObject ?: run {
             clearBinding(root)
