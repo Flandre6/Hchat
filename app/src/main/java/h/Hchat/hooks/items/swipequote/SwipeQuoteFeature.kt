@@ -110,6 +110,7 @@ private class SwipeQuoteAdapter(
     @Volatile private var adapterBindInstalled = false
     @Volatile private var recyclerInterceptInstalled = false
     @Volatile private var recyclerOnTouchInstalled = false
+    @Volatile private var recyclerDispatchInstalled = false
     @Volatile private var footerLifecycleInstalled = false
     @Volatile private var retransmitDoneHookInstalled = false
 
@@ -348,11 +349,15 @@ private class SwipeQuoteAdapter(
     }
 
     private fun installRecyclerDispatchHook(): Boolean {
-        if (recyclerInterceptInstalled && recyclerOnTouchInstalled) return true
+        if (recyclerDispatchInstalled || (recyclerInterceptInstalled && recyclerOnTouchInstalled)) return true
         var interceptHooked = recyclerInterceptInstalled
         var touchHooked = recyclerOnTouchInstalled
+        var dispatchHooked = recyclerDispatchInstalled
         for (className in RECYCLER_VIEW_CLASSES) {
             val recyclerViewClass = KavaReflector.loadClass(className, context.hostClassLoader()) ?: continue
+            if (!dispatchHooked) {
+                dispatchHooked = hookRecyclerTouchMethod(recyclerViewClass, "dispatchTouchEvent")
+            }
             if (!interceptHooked) {
                 interceptHooked = hookRecyclerTouchMethod(recyclerViewClass, "onInterceptTouchEvent")
             }
@@ -362,7 +367,8 @@ private class SwipeQuoteAdapter(
         }
         recyclerInterceptInstalled = interceptHooked
         recyclerOnTouchInstalled = touchHooked
-        return interceptHooked && touchHooked
+        recyclerDispatchInstalled = dispatchHooked
+        return dispatchHooked || (interceptHooked && touchHooked)
     }
 
     private fun installFooterLifecycleHook(): Boolean {
@@ -477,7 +483,12 @@ private class SwipeQuoteAdapter(
                     val view = param.thisObject as? View ?: return
                     val event = param.args?.getOrNull(0) as? MotionEvent ?: return
                     if (!isEnabled()) return
-                    val hit = findRecyclerTarget(view, event.x, event.y)
+                    val state = recyclerStates[view]
+                    val hit = if (event.actionMasked == MotionEvent.ACTION_DOWN || state?.hit == null) {
+                        findRecyclerTarget(view, event.x, event.y)
+                    } else {
+                        state.hit
+                    }
                     if (handleTouch(view, event, hit, recyclerStates)) {
                         param.result = true
                     }
@@ -1186,12 +1197,22 @@ private class SwipeQuoteAdapter(
 
     private fun findTargetFromViewTree(view: View): QuoteTarget? {
         rootTargets[view]?.let { return it }
+        targetFromTag(view)?.let { return it }
         if (view is ViewGroup) {
             for (i in 0 until view.childCount) {
                 findTargetFromViewTree(view.getChildAt(i))?.let { return it }
             }
         }
         return null
+    }
+
+    private fun targetFromTag(view: View): QuoteTarget? {
+        val source = view.tag ?: return null
+        val nativeMessage = resolveNativeMessage(source) ?: return null
+        val msgId = messageId(nativeMessage)
+        val talker = WeChatApis.chatPage()?.currentTalker().orEmpty()
+        if (msgId <= 0L || talker.isBlank()) return null
+        return QuoteTarget(talker, msgId, nativeMessage).also { rootTargets[view] = it }
     }
 
     private fun refreshQuoteUi(footer: Any) {
