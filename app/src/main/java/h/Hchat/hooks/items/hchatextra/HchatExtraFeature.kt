@@ -565,6 +565,12 @@ private class HchatExtraHooker(
         return runCatching {
             HookRegistry.get().hook(bind, object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
+                    // 功能关闭时不做任何 View 树/反射扫描。消息列表绑定非常高频，
+                    // 这里的无条件 capture 会直接增加群聊滚动时的主线程开销。
+                    if (!messageDetailsConfig.enabled) {
+                        messageDetailsBindStates.remove()
+                        return
+                    }
                     val state = runCatching { captureMessageDetailsBindState(param.args) }
                         .getOrElse {
                             logger("消息显示时间绑定前状态读取失败", it)

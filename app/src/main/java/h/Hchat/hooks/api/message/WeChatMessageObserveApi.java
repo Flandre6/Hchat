@@ -15,6 +15,8 @@ import h.Hchat.hooks.api.model.WeChatTransferMsg;
 
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * 业务级消息观察 API。
@@ -375,6 +377,15 @@ public final class WeChatMessageObserveApi {
     private final WeChatAccountApi accountApi;
     private final Logger logger;
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
+    /**
+     * 消息回调不能阻塞微信 AddMsg/数据库线程。单线程队列既保持消息顺序，
+     * 又把自动回复、转发、通知等订阅者从收消息热路径移开。
+     */
+    private final ExecutorService dispatchExecutor = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "Hchat-MessageDispatch");
+        thread.setDaemon(true);
+        return thread;
+    });
     private final ConcurrentHashMap<String, Long> recentOutgoing = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> recentIncomingDatabaseMessages = new ConcurrentHashMap<>();
     private volatile boolean installed;
@@ -667,6 +678,11 @@ public final class WeChatMessageObserveApi {
     }
 
     private void dispatch(ObservedMessage message) {
+        if (message == null || listeners.isEmpty()) return;
+        dispatchExecutor.execute(() -> dispatchNow(message));
+    }
+
+    private void dispatchNow(ObservedMessage message) {
         for (Listener listener : listeners) {
             try {
                 listener.onObservedMessage(message);

@@ -350,19 +350,29 @@ private class SwipeQuoteAdapter(
 
     private fun installRecyclerDispatchHook(): Boolean {
         if (recyclerDispatchInstalled || (recyclerInterceptInstalled && recyclerOnTouchInstalled)) return true
+        var dispatchHooked = recyclerDispatchInstalled
+        val recyclerClasses = RECYCLER_VIEW_CLASSES.mapNotNull { className ->
+            KavaReflector.loadClass(className, context.hostClassLoader())
+        }
+        // 先遍历所有候选类尝试 dispatchTouchEvent，避免某个早期候选类失败后
+        // 立即安装兜底 Hook，导致后续成功的 dispatch 与兜底 Hook 叠加。
+        if (!dispatchHooked) {
+            recyclerClasses.forEach { recyclerViewClass ->
+                if (!dispatchHooked) {
+                    dispatchHooked = hookRecyclerTouchMethod(recyclerViewClass, "dispatchTouchEvent")
+                }
+            }
+        }
         var interceptHooked = recyclerInterceptInstalled
         var touchHooked = recyclerOnTouchInstalled
-        var dispatchHooked = recyclerDispatchInstalled
-        for (className in RECYCLER_VIEW_CLASSES) {
-            val recyclerViewClass = KavaReflector.loadClass(className, context.hostClassLoader()) ?: continue
-            if (!dispatchHooked) {
-                dispatchHooked = hookRecyclerTouchMethod(recyclerViewClass, "dispatchTouchEvent")
-            }
-            if (!interceptHooked) {
-                interceptHooked = hookRecyclerTouchMethod(recyclerViewClass, "onInterceptTouchEvent")
-            }
-            if (!touchHooked) {
-                touchHooked = hookRecyclerTouchMethod(recyclerViewClass, "onTouchEvent")
+        if (!dispatchHooked) {
+            recyclerClasses.forEach { recyclerViewClass ->
+                if (!interceptHooked) {
+                    interceptHooked = hookRecyclerTouchMethod(recyclerViewClass, "onInterceptTouchEvent")
+                }
+                if (!touchHooked) {
+                    touchHooked = hookRecyclerTouchMethod(recyclerViewClass, "onTouchEvent")
+                }
             }
         }
         recyclerInterceptInstalled = interceptHooked
@@ -484,11 +494,14 @@ private class SwipeQuoteAdapter(
                     val event = param.args?.getOrNull(0) as? MotionEvent ?: return
                     if (!isEnabled()) return
                     val state = recyclerStates[view]
-                    val hit = if (event.actionMasked == MotionEvent.ACTION_DOWN || state?.hit == null) {
+                    // 只在 ACTION_DOWN 做一次递归命中查找。MOVE/UP 使用 DOWN
+                    // 时缓存的目标，避免群聊滚动过程中反复遍历整棵消息 View 树。
+                    val hit = if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                         findRecyclerTarget(view, event.x, event.y)
                     } else {
-                        state.hit
+                        state?.hit
                     }
+                    if (event.actionMasked != MotionEvent.ACTION_DOWN && state == null) return
                     if (handleTouch(view, event, hit, recyclerStates)) {
                         param.result = true
                     }
