@@ -53,12 +53,16 @@ internal class HomeSidePanelDrawer(
         host = parent
         buildPanel()
         root.visibility = View.GONE
-        parent.addView(root, ViewGroup.LayoutParams(-1, -1))
+        parent.addView(root, ViewGroup.LayoutParams(dp(72), -1))
+        resizeRoot(open = false)
     }
 
     fun detach() {
+        panel.animate().cancel()
+        scrim.animate().cancel()
         (root.parent as? ViewGroup)?.removeView(root)
         host = null
+        opened = false
     }
 
     fun setAvatar(bitmap: Bitmap?) {
@@ -79,6 +83,7 @@ internal class HomeSidePanelDrawer(
     fun show(animated: Boolean) {
         if (!enabled || opened) return
         opened = true
+        resizeRoot(open = true)
         root.visibility = View.VISIBLE
         edge.visibility = View.GONE
         scrim.visibility = View.VISIBLE
@@ -101,12 +106,14 @@ internal class HomeSidePanelDrawer(
             panel.animate().cancel(); scrim.animate().cancel()
             panel.translationX = -panelWidth.toFloat(); scrim.alpha = 0f; scrim.visibility = View.GONE
             edge.visibility = if (enabled) View.VISIBLE else View.GONE
+            resizeRoot(open = false)
             root.visibility = if (enabled) View.VISIBLE else View.GONE
             return
         }
         panel.animate().translationX(-panelWidth.toFloat()).setDuration(180L).setInterpolator(PathInterpolator(.3f, 0f, .8f, .15f)).withEndAction {
             scrim.visibility = View.GONE
             edge.visibility = if (enabled) View.VISIBLE else View.GONE
+            resizeRoot(open = false)
             if (!enabled) root.visibility = View.GONE
         }.start()
         scrim.animate().alpha(0f).setDuration(180L).start()
@@ -169,8 +176,18 @@ internal class HomeSidePanelDrawer(
             background = rounded(if (night()) "#222822" else "#E5EFE6", 20, if (night()) "#2AFFFFFF" else "#1F000000")
             elevation = dp(2).toFloat()
         }
-        val avatarWrap = FrameLayout(activity).apply { setPadding(dp(2), dp(2), dp(2), dp(2)); background = oval(themeAccent()) }
-        val avatar = ImageView(activity).apply { scaleType = ImageView.ScaleType.CENTER_CROP; background = oval("#D0D0D0") }
+        val avatarWrap = FrameLayout(activity).apply {
+            setPadding(dp(2), dp(2), dp(2), dp(2))
+            background = oval(themeAccent())
+            clipToOutline = true
+            outlineProvider = ViewOutlineProvider.BACKGROUND
+        }
+        val avatar = ImageView(activity).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = oval("#D0D0D0")
+            clipToOutline = true
+            outlineProvider = ViewOutlineProvider.BACKGROUND
+        }
         profileAvatar = avatar
         avatarBitmap?.let { avatar.setImageBitmap(it) }
         avatarWrap.addView(avatar, FrameLayout.LayoutParams(-1, -1)); card.addView(avatarWrap, LinearLayout.LayoutParams(dp(54), dp(54)))
@@ -287,7 +304,14 @@ internal class HomeSidePanelDrawer(
             MotionEvent.ACTION_DOWN -> { downX = event.rawX; lastX = downX; dragging = false; return true }
             MotionEvent.ACTION_MOVE -> {
                 val dx = event.rawX - downX
-                if (!opened && dx > dp(8)) { opened = true; root.visibility = View.VISIBLE; panel.translationX = -panelWidth.toFloat(); scrim.visibility = View.VISIBLE; dragging = true }
+                if (!opened && dx > dp(8)) {
+                    opened = true
+                    resizeRoot(open = true)
+                    root.visibility = View.VISIBLE
+                    panel.translationX = -panelWidth.toFloat()
+                    scrim.visibility = View.VISIBLE
+                    dragging = true
+                }
                 if (opened && (dragging || dx < -dp(8))) {
                     dragging = true
                     edge.visibility = View.GONE
@@ -329,12 +353,21 @@ internal class HomeSidePanelDrawer(
 
     private fun settleOpen() {
         opened = true
+        resizeRoot(open = true)
         edge.visibility = View.GONE
         scrim.visibility = View.VISIBLE
         panel.animate().translationX(0f).setDuration(200L).setInterpolator(PathInterpolator(.4f, 0f, .2f, 1f)).start()
         scrim.animate().alpha(.42f).setDuration(200L).start()
     }
     private fun openUrl(url: String) { runCatching { activity.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(url))) }.onFailure { toast("无法打开链接") } }
+    private fun resizeRoot(open: Boolean) {
+        val params = root.layoutParams ?: return
+        val targetWidth = if (open) ViewGroup.LayoutParams.MATCH_PARENT else dp(72)
+        if (params.width != targetWidth) {
+            params.width = targetWidth
+            root.layoutParams = params
+        }
+    }
     private fun toast(message: String) { Toast.makeText(activity, message, Toast.LENGTH_SHORT).show() }
     private fun dp(value: Int): Int = (value * density + .5f).toInt()
     private fun statusBarHeight(): Int { val id = activity.resources.getIdentifier("status_bar_height", "dimen", "android"); return if (id > 0) activity.resources.getDimensionPixelSize(id) else dp(28) }

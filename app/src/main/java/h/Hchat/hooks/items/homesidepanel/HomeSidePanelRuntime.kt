@@ -13,6 +13,8 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
+import android.view.ViewTreeObserver
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.RelativeLayout
@@ -101,30 +103,39 @@ internal class HomeSidePanelRuntime(private val context: FeatureContext) {
         private var chatVisible = false
         private var headerAttempts = 0
         private val avatarLoading = AtomicBoolean(false)
+        private var avatarUrl: String? = null
+        private var lastHomeVisible: Boolean? = null
+        private val layoutListener = ViewTreeObserver.OnGlobalLayoutListener {
+            if (attached) refresh()
+        }
 
         fun attach() {
             if (attached) return
             attached = true
+            decor.viewTreeObserver.addOnGlobalLayoutListener(layoutListener)
             drawer.attachTo(decor)
-            ensureHeader()
-            loadAvatar()
             refresh()
         }
 
         fun refresh() {
             if (!attached) return
             val enabled = HomeSidePanelSettings.enabled(activity)
-            drawer.setEnabled(enabled)
-            if (header == null) ensureHeader()
-            header?.visibility = if (enabled && !chatVisible) View.VISIBLE else View.GONE
-            name?.text = accountName()
-            status?.text = "在线"
-            loadAvatar()
-            if (Build.VERSION.SDK_INT >= 29) {
+            val homeVisible = enabled && !chatVisible && isHomeTab()
+            val stateChanged = lastHomeVisible != homeVisible
+            if (stateChanged) drawer.setEnabled(homeVisible)
+            if (homeVisible && header == null) ensureHeader()
+            val targetVisibility = if (homeVisible) View.VISIBLE else View.GONE
+            if (header?.visibility != targetVisibility) header?.visibility = targetVisibility
+            val currentName = accountName()
+            if (name?.text?.toString() != currentName) name?.text = currentName
+            if (status?.text?.toString() != "在线") status?.text = "在线"
+            if (homeVisible) loadAvatar()
+            if (Build.VERSION.SDK_INT >= 29 && stateChanged) {
                 decor.setSystemGestureExclusionRects(
-                    if (enabled && !chatVisible) listOf(Rect(0, 0, dp(64), decor.height.coerceAtLeast(1))) else emptyList()
+                    if (homeVisible) listOf(Rect(0, 0, dp(64), decor.height.coerceAtLeast(1))) else emptyList()
                 )
             }
+            lastHomeVisible = homeVisible
         }
 
         fun setChatVisible(visible: Boolean) {
@@ -135,16 +146,20 @@ internal class HomeSidePanelRuntime(private val context: FeatureContext) {
 
         fun detach() {
             attached = false
+            if (decor.viewTreeObserver.isAlive) {
+                decor.viewTreeObserver.removeOnGlobalLayoutListener(layoutListener)
+            }
             drawer.detach()
             (header?.parent as? ViewGroup)?.removeView(header)
             header = null
+            lastHomeVisible = null
         }
 
         private fun close() { drawer.close(true) }
 
         private fun ensureHeader() {
             val host = findActionBarContent(decor)
-            if (host == null) {
+            if (host == null || !isHomeTab(host)) {
                 if (headerAttempts++ < 8) handler.postDelayed({ if (attached) ensureHeader() }, 300L)
                 return
             }
@@ -162,6 +177,8 @@ internal class HomeSidePanelRuntime(private val context: FeatureContext) {
                 tag = "hchat_home_avatar"
                 setImageDrawable(GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.rgb(210, 210, 210)) })
                 scaleType = ImageView.ScaleType.CENTER_CROP
+                clipToOutline = true
+                outlineProvider = ViewOutlineProvider.BACKGROUND
             }
             root.addView(iv, LinearLayout.LayoutParams(dp(38), dp(38)))
             val text = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, 0, 0) }
@@ -213,6 +230,8 @@ internal class HomeSidePanelRuntime(private val context: FeatureContext) {
             val wxid = WeChatApis.account()?.selfWxId().orEmpty()
             val url = runCatching { WeChatApis.contacts()?.getContact(wxid)?.avatarUrl.orEmpty() }.getOrDefault("")
             if (url.isBlank()) { avatarLoading.set(false); return }
+            if (avatarUrl == url) { avatarLoading.set(false); return }
+            avatarUrl = url
             Thread {
                 val bitmap = runCatching { URL(url).openStream().use { BitmapFactory.decodeStream(it) } }.getOrNull()
                 handler.post {
@@ -241,6 +260,23 @@ internal class HomeSidePanelRuntime(private val context: FeatureContext) {
                 if (v is ViewGroup) for (i in 0 until v.childCount) walk(v.getChildAt(i), depth + 1)
             }
             walk(root, 0); return found
+        }
+
+        private fun isHomeTab(): Boolean = findActionBarContent(decor)?.let(::isHomeTab) == true
+
+        private fun isHomeTab(host: ViewGroup): Boolean {
+            fun walk(view: View): Boolean {
+                if (view is TextView && view.visibility == View.VISIBLE && view.text?.toString()?.trim() == "微信") {
+                    return true
+                }
+                if (view is ViewGroup) {
+                    for (index in 0 until view.childCount) {
+                        if (walk(view.getChildAt(index))) return true
+                    }
+                }
+                return false
+            }
+            return walk(host)
         }
 
         private fun dp(value: Int): Int = (value * activity.resources.displayMetrics.density + .5f).toInt()
