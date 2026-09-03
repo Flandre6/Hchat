@@ -519,15 +519,27 @@ private class SwipeQuoteAdapter(
         if (args.size < 2) return
         val holder = args[0] ?: return
         val position = args[1] as? Int ?: return
-        val item = adapterItem(param.thisObject ?: return, position) ?: return
+        val item = adapterItem(param.thisObject ?: return, position)
+            ?: holderMessage(holder)
+            ?: return
         val msg = resolveNativeMessage(item) ?: return
         val msgId = messageId(msg)
         if (msgId <= 0L) return
         val talker = WeChatApis.chatPage()?.currentTalker().orEmpty()
-        if (talker.isEmpty()) return
         val root = findRootView(holder) ?: return
         clearSwipeVisual(root)
         rootTargets[root] = QuoteTarget(talker, msgId, msg)
+    }
+
+    private fun holderMessage(holder: Any): Any? {
+        KavaReflector.invokeMethod(holder, "n")?.let { value ->
+            resolveNativeMessage(value)?.let { return it }
+        }
+        for (fieldName in arrayOf("i", "h")) {
+            val value = KavaReflector.readField(holder, fieldName) ?: continue
+            resolveNativeMessage(value)?.let { return it }
+        }
+        return null
     }
 
     private fun handleTouch(
@@ -550,7 +562,7 @@ private class SwipeQuoteAdapter(
                 resetSwipeVisual(state)
                 state.downX = event.rawX
                 state.downY = event.rawY
-                state.hit = hit
+                state.hit = resolveQuoteHit(hit)
                 state.direction = SwipeDirection.NONE
                 state.dragging = false
                 state.armed = false
@@ -563,7 +575,7 @@ private class SwipeQuoteAdapter(
             MotionEvent.ACTION_MOVE -> {
                 if (!state.tracking) return false
                 if (state.triggered) return true
-                val activeHit = state.hit ?: hit ?: return false
+                val activeHit = state.hit ?: resolveQuoteHit(hit) ?: return false
                 val dx = event.rawX - state.downX
                 val dy = event.rawY - state.downY
                 val quoteEnabled = isQuoteEnabled()
@@ -600,7 +612,7 @@ private class SwipeQuoteAdapter(
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                val activeHit = state.hit ?: hit
+                val activeHit = state.hit ?: resolveQuoteHit(hit)
                 val triggered = if (event.actionMasked == MotionEvent.ACTION_UP && state.armed && activeHit != null) {
                     when (state.direction) {
                         SwipeDirection.LEFT_QUOTE -> showNativeQuote(activeHit.row, activeHit.target)
@@ -1228,6 +1240,14 @@ private class SwipeQuoteAdapter(
         return QuoteTarget(talker, msgId, nativeMessage).also { rootTargets[view] = it }
     }
 
+    private fun resolveQuoteHit(hit: QuoteHit?): QuoteHit? {
+        val value = hit ?: return null
+        if (value.target.talker.isNotBlank()) return value
+        val talker = WeChatApis.chatPage()?.currentTalker().orEmpty()
+        if (talker.isBlank()) return value
+        return value.copy(target = value.target.copy(talker = talker))
+    }
+
     private fun refreshQuoteUi(footer: Any) {
         val method = findQuoteVisibilityMethod(footer.javaClass)
         if (method != null && KavaReflector.invokeSuccessfully(method, footer, View.VISIBLE)) {
@@ -1624,6 +1644,7 @@ private class SwipeQuoteAdapter(
         const val MENU_REPEAT_TITLE = "复读[H]"
         const val DEFAULT_VOICE_DURATION_MS = 1000
         val RECYCLER_VIEW_CLASSES = arrayOf(
+            "com.tencent.mm.pluginsdk.ui.tools.ChattingRecyclerView",
             "androidx.recyclerview.widget.RecyclerView",
             "android.support.v7.widget.RecyclerView"
         )
