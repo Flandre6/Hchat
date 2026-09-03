@@ -492,8 +492,13 @@ private class SwipeQuoteAdapter(
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     val view = param.thisObject as? View ?: return
                     val event = param.args?.getOrNull(0) as? MotionEvent ?: return
-                    if (!isEnabled()) return
                     val state = recyclerStates[view]
+                    // 配置只在一次手势开始时读取；MOVE/UP 不再反复访问 FastKV。
+                    if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                        if (!isAnyGestureEnabled()) return
+                    } else if (state == null) {
+                        return
+                    }
                     // 只在 ACTION_DOWN 做一次递归命中查找。MOVE/UP 使用 DOWN
                     // 时缓存的目标，避免群聊滚动过程中反复遍历整棵消息 View 树。
                     val hit = if (event.actionMasked == MotionEvent.ACTION_DOWN) {
@@ -560,6 +565,12 @@ private class SwipeQuoteAdapter(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 resetSwipeVisual(state)
+                state.quoteEnabled = isQuoteEnabled()
+                state.repeatEnabled = isRepeatEnabled()
+                if (!state.quoteEnabled && !state.repeatEnabled) {
+                    state.tracking = false
+                    return false
+                }
                 state.downX = event.rawX
                 state.downY = event.rawY
                 state.hit = resolveQuoteHit(hit)
@@ -578,8 +589,6 @@ private class SwipeQuoteAdapter(
                 val activeHit = state.hit ?: resolveQuoteHit(hit) ?: return false
                 val dx = event.rawX - state.downX
                 val dy = event.rawY - state.downY
-                val quoteEnabled = isQuoteEnabled()
-                val repeatEnabled = isRepeatEnabled()
                 if (!state.dragging && abs(dy) > dp(32f) && abs(dy) > abs(dx) * 1.2f) {
                     resetSwipeVisual(state)
                     state.tracking = false
@@ -589,8 +598,8 @@ private class SwipeQuoteAdapter(
                     val quoteHorizontalEnough = abs(dx) > dp(6f) && abs(dx) > abs(dy) * 1.15f
                     val repeatHorizontalEnough = abs(dx) > dp(18f) && abs(dx) > abs(dy) * 1.35f
                     val direction = when {
-                        quoteHorizontalEnough && dx < 0f && quoteEnabled -> SwipeDirection.LEFT_QUOTE
-                        repeatHorizontalEnough && dx > 0f && repeatEnabled -> SwipeDirection.RIGHT_REPEAT
+                        quoteHorizontalEnough && dx < 0f && state.quoteEnabled -> SwipeDirection.LEFT_QUOTE
+                        repeatHorizontalEnough && dx > 0f && state.repeatEnabled -> SwipeDirection.RIGHT_REPEAT
                         else -> SwipeDirection.NONE
                     }
                     if (direction == SwipeDirection.NONE) return false
@@ -602,7 +611,10 @@ private class SwipeQuoteAdapter(
                     SwipeDirection.RIGHT_REPEAT -> dx.coerceAtLeast(0f)
                     SwipeDirection.NONE -> return false
                 }.coerceAtMost(dp(150f))
-                view.parent?.requestDisallowInterceptTouchEvent(true)
+                if (!state.interceptDisallowed) {
+                    view.parent?.requestDisallowInterceptTouchEvent(true)
+                    state.interceptDisallowed = true
+                }
                 state.armed = drag >= triggerDistance(state.direction)
                 updateSwipeVisual(state, activeHit, drag)
                 if (state.armed && !state.hapticSent) {
@@ -634,7 +646,10 @@ private class SwipeQuoteAdapter(
                 state.dragging = false
                 state.armed = false
                 state.hapticSent = false
-                view.parent?.requestDisallowInterceptTouchEvent(false)
+                if (state.interceptDisallowed) {
+                    view.parent?.requestDisallowInterceptTouchEvent(false)
+                    state.interceptDisallowed = false
+                }
                 return consume
             }
         }
@@ -649,6 +664,19 @@ private class SwipeQuoteAdapter(
             state.startTranslationX = 0f
             clearSwipeVisual(row)
         }
+        // 触摸采样可能高于屏幕刷新率，合并到下一帧只应用最后一次位移。
+        state.pendingDrag = drag
+        val generation = state.visualGeneration
+        if (state.visualFramePosted) return
+        state.visualFramePosted = true
+        row.postOnAnimation {
+            state.visualFramePosted = false
+            if (generation != state.visualGeneration || state.visualRow !== row) return@postOnAnimation
+            applySwipeVisual(state, row, state.pendingDrag)
+        }
+    }
+
+    private fun applySwipeVisual(state: TouchState, row: View, drag: Float) {
         val maxOffset = dp(132f)
         val offset = drag.coerceAtMost(maxOffset)
         row.translationX = when (state.direction) {
@@ -656,10 +684,11 @@ private class SwipeQuoteAdapter(
             SwipeDirection.RIGHT_REPEAT -> state.startTranslationX + offset
             SwipeDirection.NONE -> state.startTranslationX
         }
-        row.alpha = 1f - 0.07f * (offset / maxOffset).coerceIn(0f, 1f)
     }
 
     private fun resetSwipeVisual(state: TouchState) {
+        state.visualGeneration++
+        state.visualFramePosted = false
         val row = state.visualRow ?: return
         row.animate().cancel()
         row.animate()
@@ -1566,7 +1595,7 @@ private class SwipeQuoteAdapter(
         return parameterType.isAssignableFrom(value.javaClass)
     }
 
-    private fun isEnabled(): Boolean {
+    private fun isAnyGestureEnabled(): Boolean {
         return isQuoteEnabled() || isRepeatEnabled()
     }
 
@@ -1632,6 +1661,12 @@ private class SwipeQuoteAdapter(
         var armed = false
         var hapticSent = false
         var triggered = false
+        var quoteEnabled = false
+        var repeatEnabled = false
+        var interceptDisallowed = false
+        var pendingDrag = 0f
+        var visualGeneration = 0L
+        var visualFramePosted = false
         var lastEventTime = 0L
         var lastAction = -1
     }
