@@ -16,6 +16,8 @@ android {
     if (modernXposed) {
         sourceSets.getByName("main").java.directories.add("src/modern/java")
         sourceSets.getByName("main").resources.directories.add("src/modern/resources")
+    } else {
+        sourceSets.getByName("main").assets.srcDir("src/legacy/assets")
     }
 
     val autoVersionCode = System.getenv("HCAT_VERSION_CODE")?.toIntOrNull() ?: 1

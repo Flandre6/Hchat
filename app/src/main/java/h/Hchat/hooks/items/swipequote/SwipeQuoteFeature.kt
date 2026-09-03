@@ -664,6 +664,11 @@ private class SwipeQuoteAdapter(
             state.startTranslationX = 0f
             clearSwipeVisual(row)
         }
+        if (!row.hasTransientState) {
+            // 媒体消息内部常有异步解码/播放 View，拖动期间禁止 RecyclerView 回收该行，
+            // 避免重新绑定导致图片闪烁或视频画面短暂重置。
+            row.setHasTransientState(true)
+        }
         // 触摸采样可能高于屏幕刷新率，合并到下一帧只应用最后一次位移。
         state.pendingDrag = drag
         val generation = state.visualGeneration
@@ -698,6 +703,7 @@ private class SwipeQuoteAdapter(
             .withEndAction {
                 row.translationX = 0f
                 row.alpha = 1f
+                row.setHasTransientState(false)
             }
             .start()
         state.visualRow = null
@@ -709,6 +715,7 @@ private class SwipeQuoteAdapter(
         row.animate().cancel()
         if (row.translationX != 0f) row.translationX = 0f
         if (row.alpha != 1f) row.alpha = 1f
+        row.setHasTransientState(false)
     }
 
     private fun showNativeQuote(row: View, target: QuoteTarget): Boolean {

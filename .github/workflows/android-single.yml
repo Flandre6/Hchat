@@ -46,6 +46,10 @@ jobs:
           set -e
 
           current_branch="${GITHUB_REF_NAME}"
+          modern_xposed="false"
+          if [ "$current_branch" = "alt-entry-feature" ]; then
+            modern_xposed="true"
+          fi
           if [ "$current_branch" = "alt-entry" ]; then
             apk_name="Hchat-alt-entry-release-signed.apk"
           else
@@ -107,6 +111,7 @@ jobs:
           echo "HCAT_RELEASE_TAG=v${version_name}" >> "$GITHUB_ENV"
           echo "HCAT_RELEASE_TITLE=${version_name}" >> "$GITHUB_ENV"
           echo "HCAT_APK_NAME=${apk_name}" >> "$GITHUB_ENV"
+          echo "HCAT_MODERN_XPOSED=${modern_xposed}" >> "$GITHUB_ENV"
 
           git fetch --force --tags origin 'refs/tags/v*:refs/tags/v*' >/dev/null 2>&1 || true
           previous_change_tag="$(
@@ -152,7 +157,7 @@ jobs:
           HCAT_STORE_PASSWORD: ${{ secrets.HCAT_STORE_PASSWORD }}
           HCAT_KEY_ALIAS: ${{ secrets.HCAT_KEY_ALIAS }}
           HCAT_KEY_PASSWORD: ${{ secrets.HCAT_KEY_PASSWORD }}
-        run: sh ./gradlew :app:assembleRelease --build-cache --parallel --no-watch-fs -x lintVitalAnalyzeRelease
+        run: sh ./gradlew --project-prop "hchat.modernXposed=${HCAT_MODERN_XPOSED}" :app:assembleRelease --build-cache --parallel --no-watch-fs -x lintVitalAnalyzeRelease
 
       - name: 上传 APK 产物
         uses: actions/upload-artifact@v4
