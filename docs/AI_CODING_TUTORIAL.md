@@ -807,6 +807,15 @@ sh ./gradlew :app:compileReleaseKotlin :app:compileReleaseJavaWithJavac
 
 本地默认不要执行 Gradle。只有明确需要验证源码或用户明确要求构建时才执行；低内存设备优先用 GitHub Actions。
 
+API 102 现代 Xposed 构建使用显式属性，不影响默认 legacy 构建：
+
+```sh
+./gradlew --project-prop hchat.modernXposed=true \
+  :app:compileReleaseKotlin :app:compileReleaseJavaWithJavac
+```
+
+该路径使用 `io.github.libxposed:api:102.0.0` 和 `META-INF/xposed/java_init.list`，入口为 `h.Hchat.Api102ModuleEntry`；默认路径仍使用 legacy `xposed_init` 入口。
+
 ### 2. 正式 R8 构建需要什么
 
 `app/build.gradle.kts` 的 `release` 默认配置是：

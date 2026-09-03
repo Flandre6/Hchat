@@ -53,6 +53,15 @@ git status --short --branch
 
 正式 Release 默认开启 R8 和资源压缩。新贡献者没有项目签名证书时，应先做编译检查或使用自己的测试签名；更换证书生成的 APK 不能保证覆盖安装维护者发布的版本。
 
+API 102 现代 Xposed 构建通过显式 Gradle 属性启用，默认构建仍保留 legacy Xposed 入口：
+
+```powershell
+java -cp gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain `
+  --project-prop hchat.modernXposed=true :app:assembleRelease --no-daemon --max-workers=1 --console=plain
+```
+
+现代构建使用 `io.github.libxposed:api:102.0.0`、`META-INF/xposed/java_init.list` 和 API 102 拦截链；未指定该属性时继续使用 `de.robv.android.xposed:api:82`。
+
 构建命令、无 R8 测试、签名和 GitHub Actions 说明全部写在 [AI Coding 完整教程](docs/AI_CODING_TUTORIAL.md) 中。
 
 ## 脚本插件

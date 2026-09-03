@@ -1,0 +1,8 @@
+id=h.Hchat
+name=Hchat
+version=1.0.0
+versionCode=1
+author=Flandre6
+description=微信功能增强模块（API 102）
+minApiVersion=102
+targetApiVersion=102
