@@ -76,14 +76,42 @@ public final class ModernXposedRuntime {
     }
 
     public static void log(String message) {
-        Log.i(TAG, message == null ? "null" : message);
+        writeLog(Log.INFO, message, null);
     }
 
     public static void log(Throwable throwable) {
-        Log.e(TAG, throwable == null ? "null" : throwable.getMessage(), throwable);
+        writeLog(Log.ERROR, throwable == null ? "null" : throwable.getMessage(), throwable);
     }
 
     public static void log(String message, Throwable throwable) {
-        Log.e(TAG, message + ": " + throwable.getMessage(), throwable);
+        writeLog(Log.ERROR, message, throwable);
+    }
+
+    /**
+     * API 102 has its own Xposed log sink. Android Log alone is not shown in
+     * the LSPosed module log viewer, so prefer the framework sink whenever the
+     * module has been attached to the current package.
+     */
+    private static void writeLog(int priority, String message, Throwable throwable) {
+        String text = message == null ? "null" : message;
+        XposedInterface api = xposed;
+        if (api != null) {
+            try {
+                if (throwable == null) {
+                    api.log(priority, TAG, text);
+                } else {
+                    api.log(priority, TAG, text, throwable);
+                }
+                return;
+            } catch (Throwable ignored) {
+                // Fall back to logcat if a framework implementation rejects
+                // the log call during early process teardown.
+            }
+        }
+        if (throwable == null) {
+            Log.println(priority, TAG, text);
+        } else {
+            Log.println(priority, TAG, text + "\n" + Log.getStackTraceString(throwable));
+        }
     }
 }
