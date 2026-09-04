@@ -45,6 +45,11 @@ jobs:
           echo "HCAT_VERSION_NAME=test.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
           echo "HCAT_VERSION_CODE=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
           echo "HCAT_APK_NAME=${apk_name}" >> "$GITHUB_ENV"
+          if [ "${GITHUB_REF_NAME}" = "alt-entry-feature" ]; then
+            echo "HCAT_MODERN_XPOSED=true" >> "$GITHUB_ENV"
+          else
+            echo "HCAT_MODERN_XPOSED=false" >> "$GITHUB_ENV"
+          fi
 
           sed -i '/android.aapt2FromMavenOverride/d' gradle.properties
           sed -i 's/isMinifyEnabled = true/isMinifyEnabled = false/' app/build.gradle.kts
@@ -67,7 +72,7 @@ jobs:
           HCAT_STORE_PASSWORD: ${{ secrets.HCAT_STORE_PASSWORD }}
           HCAT_KEY_ALIAS: ${{ secrets.HCAT_KEY_ALIAS }}
           HCAT_KEY_PASSWORD: ${{ secrets.HCAT_KEY_PASSWORD }}
-        run: sh ./gradlew :app:assembleRelease --build-cache --parallel --no-watch-fs -x lintVitalRelease
+        run: sh ./gradlew --project-prop "hchat.modernXposed=${HCAT_MODERN_XPOSED}" :app:assembleRelease --build-cache --parallel --no-watch-fs -x lintVitalRelease
 
       - name: 上传测试 APK
         uses: actions/upload-artifact@v4
