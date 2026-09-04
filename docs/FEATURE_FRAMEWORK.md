@@ -283,7 +283,7 @@ Protobuf 抓包复用 `ProtobufPacketHook` 的唯一网络入口，通过 `onPro
 
 插件列表里的单插件开关必须实时生效：新插件默认关闭，打开时立刻执行对应目录的 `main.java`，关闭时立刻卸载对应插件。加载失败时自动关闭该插件，Toast 文案固定为 `加载[插件名]失败，已自动关闭`，不要在 Toast 里显示完整异常。插件加载失败必须写入当前插件目录的 `log.txt`，内容保留异常类型和简短 message，不写完整堆栈。`log(...)` 必须写入当前插件目录的 `log.txt`，并同步输出到 LSPosed 日志；`toast(...)` 自动带上当前插件名前缀。
 
-脚本运行时默认导入 `XposedBridge`、`XposedHelpers`、`XC_MethodHook`，同时注入 `XposedBridgeClass`、`XposedHelpersClass`、`XC_MethodHookClass`，脚本可以直接使用 LSPosed/Xposed 原生写法。为了贴近 WA 的脚本体验，还提供轻量封装：`findClass(className)`、`hookBefore(member, callback)`、`hookAfter(member, callback)`、`hookReplace(member, callback)`、`unhook(handle)`。通过这些封装注册的 hook 会按插件 ID 记录，插件关闭或加载失败时会自动清理。
+脚本运行时默认导入 `XposedBridge`、`XposedHelpers`、`XC_MethodHook`，同时注入 `XposedBridgeClass`、`XposedHelpersClass`、`XC_MethodHookClass`，脚本可以直接使用 LSPosed/Xposed 原生写法。为了贴近 WA 的脚本体验，还提供轻量封装：`findClass(className)`、`hookBefore(member, callback)`、`hookAfter(member, callback)`、`hookReplace(member, callback)`、`unhook(handle)`。通过这些封装注册的 hook 会按插件 ID 记录，插件关闭或加载失败时会自动清理。脚本 Hook 与同一插件的其它 BeanShell 回调共用非阻塞解释器锁；解释器忙碌时跳过当前脚本 Hook 并继续微信原方法，按插件、类型和目标成员限频记录，避免同步网络脚本阻塞消息绑定主线程。
 
 脚本支持调用模块共享 DexKit，不要在脚本里自行初始化 DexKit。运行时会注入 `dexKit`、`dexKitBridge`、`dexFinder`、`dexBridgeHolder`，以及 `DexKitBridgeClass`、`DexFinderClass`、`DexBridgeHolderClass`。WA 风格简化函数包括 `findClassList(usingStrings)` 和 `findMemberList(usingStrings)`，参数兼容 WA 常见的 `{"keyword"}` 大括号数组、字符串、数组、`Object[]` 或 `List`；返回值分别是可直接使用的 `Class<?>` 列表和可直接配合 `hookBefore/hookAfter` 的 `Member` 列表。`findMemberList` 会同时收集方法命中和类命中的构造函数/方法，尽量保持旧 WA 插件不改写即可迁移。
 
@@ -1940,6 +1940,7 @@ fun onEvent() {
 `sec_msg_node` 标记，`反安全消息` 关闭微信对该标记的识别检查，以恢复普通消息操作菜单。
 两个功能默认开启，运行时通过 `Hchat_secure_message` 和 `Hchat_anti_secure_message` 配置；
 DexKit 方法描述符分别缓存到独立缓存中，并按微信版本、APK/热更新和 ClassLoader 运行时 key 失效。
-当前实现优先使用已解析的本地消息插入 API，并以稳定字符串定位兜底；反安全消息会对有限数量的
+当前实现优先使用已解析的本地消息插入 API，并以稳定字符串定位兜底；发送标记写入兼容
+`field_msgSource/msgSource` 以及 8.0.77 `MsgInfo(e9)` 使用的混淆字段 `G`；反安全消息会对有限数量的
 单参数布尔检查候选安装 Hook。未在设备上对微信 8.0.77 完成真机验证，仍需使用目标 APK 和
 LSPosed 日志确认定位结果。

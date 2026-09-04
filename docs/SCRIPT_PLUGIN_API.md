@@ -1986,7 +1986,10 @@ startTransform(7, pluginDir + "/a.mp3", cacheDir + "/a.aac", 44100, new java.uti
 | `callback` | 回调对象。Hook 参数运行时实际对象是 `XC_MethodHook.MethodHookParam`。脚本加载前会把 `MethodHookParam` 类型声明兼容为 `Object`，运行时回调参数仍是原始 `XC_MethodHook.MethodHookParam`。 |
 | `handle` | `hookBefore/hookAfter/hookReplace` 返回的 Hook 句柄。 |
 
-通过这些接口注册的 Hook 会在插件关闭或加载失败时自动清理。
+通过这些接口注册的 Hook 会在插件关闭或加载失败时自动清理。所有脚本 Hook 回调与同一插件的
+BeanShell 入口共用解释器锁；如果插件正在执行消息、生命周期或其它脚本回调，新的 Hook 回调不会
+等待锁，而是跳过该插件并继续宿主原方法，同时把插件名、Hook 类型和目标成员写入限频日志。这样可
+避免脚本里的同步网络操作阻塞微信主线程；Hook 回调应自行避免耗时工作。
 
 示例：
 

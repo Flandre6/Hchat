@@ -19,6 +19,7 @@ class SendSecureMessageFeature : BaseFeature() {
     private var prefs: android.content.SharedPreferences? = null
     private lateinit var methodPrefs: android.content.SharedPreferences
     @Volatile private var markerLogged = false
+    @Volatile private var markerFailureLogged = false
     @Volatile private var hookMissLogged = false
 
     override fun featureId(): String = SecureMessageSettings.SEND_ID
@@ -104,26 +105,31 @@ class SendSecureMessageFeature : BaseFeature() {
             else -> "<msgsource>${SecureMessageSettings.SEC_XML}</msgsource>"
         }
         if (!setMessageSource(message, updated)) {
-            logError("安全消息标记注入失败: msgSource 不可写", null)
+            if (!markerFailureLogged) {
+                markerFailureLogged = true
+                logError("安全消息标记注入失败: msgSource 不可写，类型=${message.javaClass.name}", null)
+            }
         } else if (!markerLogged) {
             markerLogged = true
             logInfo("安全消息标记已写入文本消息")
         }
     }
 
-    private fun readMessageSource(message: Any): String =
-        (KavaReflector.readField(message, "field_msgSource") as? String)
-            ?: (KavaReflector.readField(message, "msgSource") as? String)
-            ?: (KavaReflector.invokeMethod(message, "getMsgSource") as? String)
-            ?: ""
+    private fun readMessageSource(message: Any): String {
+        for (fieldName in SOURCE_FIELDS) {
+            (KavaReflector.readField(message, fieldName) as? String)?.let { return it }
+        }
+        return (KavaReflector.invokeMethod(message, "getMsgSource") as? String).orEmpty()
+    }
 
     private fun setMessageSource(message: Any, value: String): Boolean {
         for (name in SOURCE_SETTERS) {
             val method = KavaReflector.findCompatibleMethod(message.javaClass, name, value)
             if (KavaReflector.invokeSuccessfully(method, message, value)) return true
         }
-        return KavaReflector.writeField(message, "field_msgSource", value) ||
-            KavaReflector.writeField(message, "msgSource", value)
+        return SOURCE_FIELDS.any { fieldName ->
+            KavaReflector.writeField(message, fieldName, value)
+        }
     }
 
     private fun isOutgoingText(message: Any): Boolean {
@@ -189,5 +195,7 @@ class SendSecureMessageFeature : BaseFeature() {
     private companion object {
         const val INSERT_ANCHOR = "Error insert message msg:%s talker:%s"
         val SOURCE_SETTERS = arrayOf("setMsgSource", "setMsgsource", "setSource")
+        // 8.0.77 (e9) stores MsgInfo.msgSource in the obfuscated G field.
+        val SOURCE_FIELDS = arrayOf("field_msgSource", "msgSource", "G", "g")
     }
 }
