@@ -126,4 +126,8 @@ abstract class BaseFeature : Feature {
             throwable
         )
     }
+
+    protected fun logInfo(message: String) {
+        HLog.i("[Hchat:${featureId()}] $message")
+    }
 }

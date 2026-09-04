@@ -20,4 +20,8 @@ public final class HLog {
         }
         XposedBridge.log(new RuntimeException(message, throwable));
     }
+
+    public static void i(String message) {
+        XposedBridge.log(message == null ? "null" : message);
+    }
 }

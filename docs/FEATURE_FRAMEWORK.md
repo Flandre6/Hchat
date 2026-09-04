@@ -1938,7 +1938,8 @@ fun onEvent() {
 
 `securemessage` 提供两个相互独立的设置入口：`安全消息` 在自己发送的文本消息入库前加入
 `sec_msg_node` 标记，`反安全消息` 关闭微信对该标记的识别检查，以恢复普通消息操作菜单。
-两个功能默认关闭，运行时通过 `Hchat_secure_message` 和 `Hchat_anti_secure_message` 配置；
+两个功能默认开启，运行时通过 `Hchat_secure_message` 和 `Hchat_anti_secure_message` 配置；
 DexKit 方法描述符分别缓存到独立缓存中，并按微信版本、APK/热更新和 ClassLoader 运行时 key 失效。
-当前实现只对确认的文本消息入库方法和单参数布尔检查方法安装 Hook，未在设备上对微信 8.0.77
-完成真机验证，仍需使用目标 APK 和 LSPosed 日志确认定位结果。
+当前实现优先使用已解析的本地消息插入 API，并以稳定字符串定位兜底；反安全消息会对有限数量的
+单参数布尔检查候选安装 Hook。未在设备上对微信 8.0.77 完成真机验证，仍需使用目标 APK 和
+LSPosed 日志确认定位结果。
