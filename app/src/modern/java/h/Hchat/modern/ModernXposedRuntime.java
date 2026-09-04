@@ -50,7 +50,13 @@ public final class ModernXposedRuntime {
 
             if (!param.isReturnEarly()) {
                 try {
-                    param.setResult(chain.proceedWith(param.thisObject, param.args));
+                    // API 102 rejects a null receiver in proceedWith(). Static
+                    // methods (and constructors before an instance exists) must
+                    // continue through the args-only overload.
+                    Object result = param.thisObject == null
+                            ? chain.proceed(param.args)
+                            : chain.proceedWith(param.thisObject, param.args);
+                    param.setResult(result);
                     param.clearReturnEarly();
                 } catch (Throwable throwable) {
                     param.setThrowable(throwable);
