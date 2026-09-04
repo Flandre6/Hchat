@@ -39,6 +39,7 @@ import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.lang.ref.WeakReference
 import java.util.Collections
+import java.util.IdentityHashMap
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -519,14 +520,25 @@ private class SwipeQuoteAdapter(
         if (args.size < 2) return
         val holder = args[0] ?: return
         val position = args[1] as? Int ?: return
-        val item = adapterItem(param.thisObject ?: return, position) ?: return
-        val msg = resolveNativeMessage(item) ?: return
-        val msgId = messageId(msg)
-        if (msgId <= 0L) return
-        val talker = WeChatApis.chatPage()?.currentTalker().orEmpty()
-        if (talker.isEmpty()) return
         val root = findRootView(holder) ?: return
         clearSwipeVisual(root)
+        rootTargets.remove(root)
+        val item = adapterItem(param.thisObject ?: return, position) ?: return
+        val msg = resolveNativeMessage(item) ?: run {
+            rootTargets.remove(root)
+            return
+        }
+        val msgId = messageId(msg)
+        if (msgId <= 0L) {
+            rootTargets.remove(root)
+            return
+        }
+        // The chat controller can publish the row before currentTalker() is ready.
+        // Prefer the talker carried by the bound message and resolve the current
+        // page again only when the gesture is actually triggered.
+        val talker = nativeMessageTalker(msg).ifBlank {
+            WeChatApis.chatPage()?.currentTalker().orEmpty()
+        }
         rootTargets[root] = QuoteTarget(talker, msgId, msg)
     }
 
@@ -537,11 +549,10 @@ private class SwipeQuoteAdapter(
         stateMap: MutableMap<View, TouchState>
     ): Boolean {
         val state = stateMap.getOrPut(view) { TouchState() }
-        if (event.actionMasked == MotionEvent.ACTION_MOVE &&
-            state.lastEventTime == event.eventTime &&
-            state.lastAction == event.actionMasked
-        ) {
-            return state.dragging
+        // RecyclerView sends the same MotionEvent through both interception and
+        // handling. Do not reset or complete one gesture twice at either entry.
+        if (state.lastEventTime == event.eventTime && state.lastAction == event.actionMasked) {
+            return state.lastResult
         }
         state.lastEventTime = event.eventTime
         state.lastAction = event.actionMasked
@@ -559,11 +570,12 @@ private class SwipeQuoteAdapter(
                 state.triggered = false
                 state.visualRow = null
                 state.startTranslationX = 0f
+                state.lastResult = false
             }
             MotionEvent.ACTION_MOVE -> {
-                if (!state.tracking) return false
-                if (state.triggered) return true
-                val activeHit = state.hit ?: hit ?: return false
+                if (!state.tracking) return false.also { state.lastResult = it }
+                if (state.triggered) return true.also { state.lastResult = it }
+                val activeHit = state.hit ?: hit ?: return false.also { state.lastResult = it }
                 val dx = event.rawX - state.downX
                 val dy = event.rawY - state.downY
                 val quoteEnabled = isQuoteEnabled()
@@ -571,7 +583,7 @@ private class SwipeQuoteAdapter(
                 if (!state.dragging && abs(dy) > dp(32f) && abs(dy) > abs(dx) * 1.2f) {
                     resetSwipeVisual(state)
                     state.tracking = false
-                    return false
+                    return false.also { state.lastResult = it }
                 }
                 if (!state.dragging) {
                     val quoteHorizontalEnough = abs(dx) > dp(6f) && abs(dx) > abs(dy) * 1.15f
@@ -581,14 +593,14 @@ private class SwipeQuoteAdapter(
                         repeatHorizontalEnough && dx > 0f && repeatEnabled -> SwipeDirection.RIGHT_REPEAT
                         else -> SwipeDirection.NONE
                     }
-                    if (direction == SwipeDirection.NONE) return false
+                    if (direction == SwipeDirection.NONE) return false.also { state.lastResult = it }
                     state.direction = direction
                     state.dragging = true
                 }
                 val drag = when (state.direction) {
                     SwipeDirection.LEFT_QUOTE -> (-dx).coerceAtLeast(0f)
                     SwipeDirection.RIGHT_REPEAT -> dx.coerceAtLeast(0f)
-                    SwipeDirection.NONE -> return false
+                    SwipeDirection.NONE -> return false.also { state.lastResult = it }
                 }.coerceAtMost(dp(150f))
                 view.parent?.requestDisallowInterceptTouchEvent(true)
                 state.armed = drag >= triggerDistance(state.direction)
@@ -597,7 +609,7 @@ private class SwipeQuoteAdapter(
                     view.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
                     state.hapticSent = true
                 }
-                return true
+                return true.also { state.lastResult = it }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val activeHit = state.hit ?: hit
@@ -623,6 +635,7 @@ private class SwipeQuoteAdapter(
                 state.armed = false
                 state.hapticSent = false
                 view.parent?.requestDisallowInterceptTouchEvent(false)
+                state.lastResult = consume
                 return consume
             }
         }
@@ -672,7 +685,7 @@ private class SwipeQuoteAdapter(
 
     private fun showNativeQuote(row: View, target: QuoteTarget): Boolean {
         val talker = WeChatApis.chatPage()?.currentTalker().orEmpty()
-        if (talker.isEmpty() || talker != target.talker) return false
+        if (talker.isEmpty() || (target.talker.isNotEmpty() && talker != target.talker)) return false
         val footer = findChatFooterForQuote(row) ?: return false
         if (invokeQuoteInfoMethod(footer, target.nativeMessage)) {
             invokeQuoteIdMethod(footer, target.msgId)
@@ -697,7 +710,7 @@ private class SwipeQuoteAdapter(
 
     private fun repeatNativeMessage(target: QuoteTarget): Boolean {
         val talker = WeChatApis.chatPage()?.currentTalker().orEmpty()
-        if (talker.isEmpty() || talker != target.talker) return false
+        if (talker.isEmpty() || (target.talker.isNotEmpty() && talker != target.talker)) return false
         return runCatching {
             val selection = repeatSelectionForTarget(target) ?: return false
             val message = selection.message
@@ -897,6 +910,12 @@ private class SwipeQuoteAdapter(
         )
     }
 
+    private fun nativeMessageTalker(source: Any): String {
+        return (readMessageValue(source, "getTalker", "field_talker", "talker") as? String)
+            ?.trim()
+            .orEmpty()
+    }
+
     private fun nativeMessageContent(source: Any): String {
         (KavaReflector.readField(source, "field_content") as? String)
             ?.takeIf { it.isNotBlank() }
@@ -1052,19 +1071,32 @@ private class SwipeQuoteAdapter(
 
     private fun adapterItem(adapter: Any, position: Int): Any? {
         if (position < 0) return null
-        itemMethodCache[adapter.javaClass]?.let { return KavaReflector.invoke(it, adapter, position) }
-        var current: Class<*>? = adapter.javaClass
-        while (current != null && current != Any::class.java) {
-            val method = KavaReflector.declaredMethods(current).firstOrNull {
-                it.parameterTypes.size == 1
-                    && (it.parameterTypes[0] == Integer.TYPE || it.parameterTypes[0] == Int::class.java)
-                    && (it.name == "J0" || it.name == "getItem" || it.name == "get")
+        itemMethodCache[adapter.javaClass]?.let {
+            KavaReflector.invoke(it, adapter, position)
+                ?.takeIf { item -> resolveNativeMessage(item) != null }
+                ?.let { item -> return item }
+            itemMethodCache.remove(adapter.javaClass, it)
+        }
+        for (methodName in ITEM_METHOD_NAMES) {
+            var current: Class<*>? = adapter.javaClass
+            while (current != null && current != Any::class.java) {
+                val methods = KavaReflector.declaredMethods(current)
+                    .filter {
+                        it.parameterTypes.size == 1 &&
+                            (it.parameterTypes[0] == Integer.TYPE || it.parameterTypes[0] == Int::class.java) &&
+                            it.returnType != Void.TYPE &&
+                            it.name == methodName
+                    }
+                for (method in methods) {
+                    KavaReflector.invoke(method, adapter, position)
+                        ?.takeIf { item -> resolveNativeMessage(item) != null }
+                        ?.let { item ->
+                            itemMethodCache[adapter.javaClass] = method
+                            return item
+                        }
+                }
+                current = current.superclass
             }
-            if (method != null) {
-                itemMethodCache[adapter.javaClass] = method
-                KavaReflector.invoke(method, adapter, position)?.let { return it }
-            }
-            current = current.superclass
         }
         return adapterListItem(adapter, position)
     }
@@ -1076,20 +1108,33 @@ private class SwipeQuoteAdapter(
         var current: Class<*>? = adapter.javaClass
         while (current != null && current != Any::class.java) {
             val field = KavaReflector.declaredFields(current).firstOrNull {
-                it.name == "K" || it.name == "items" || it.name == "data" || it.name == "list"
+                it.name == "K" || it.name == "I" || it.name == "items" || it.name == "data" || it.name == "list"
             }
             if (field != null) {
-                itemListFieldCache[adapter.javaClass] = field
-                return listItem(KavaReflector.readField(field, adapter), position)
+                listItem(KavaReflector.readField(field, adapter), position)?.let {
+                    itemListFieldCache[adapter.javaClass] = field
+                    return it
+                }
             }
             current = current.superclass
         }
-        return findNestedListItem(adapter, position, Collections.newSetFromMap(WeakHashMap<Any, Boolean>()), 0)
+        return findNestedListItem(adapter, position, Collections.newSetFromMap(IdentityHashMap<Any, Boolean>()), 0)
     }
 
     private fun listItem(list: Any?, position: Int): Any? {
         if (list == null || position < 0) return null
         if (list is List<*> && position < list.size) return list[position]
+        var current: Class<*>? = list.javaClass
+        while (current != null && current != Any::class.java) {
+            val field = KavaReflector.declaredFields(current).firstOrNull {
+                java.util.List::class.java.isAssignableFrom(it.type) &&
+                    it.name in arrayOf("o", "items", "data", "list")
+            }
+            if (field != null) {
+                listItem(KavaReflector.readField(field, list), position)?.let { return it }
+            }
+            current = current.superclass
+        }
         return KavaReflector.invoke(KavaReflector.findMethod(list.javaClass, "get", Integer.TYPE), list, position)
             ?: KavaReflector.invoke(KavaReflector.findMethod(list.javaClass, "get", Int::class.java), list, position)
     }
@@ -1127,7 +1172,7 @@ private class SwipeQuoteAdapter(
     }
 
     private fun resolveNativeMessage(source: Any): Any? {
-        return resolveNativeMessage(source, Collections.newSetFromMap(WeakHashMap<Any, Boolean>()), 0)
+        return resolveNativeMessage(source, Collections.newSetFromMap(IdentityHashMap<Any, Boolean>()), 0)
     }
 
     private fun resolveNativeMessage(source: Any?, visited: MutableSet<Any>, depth: Int): Any? {
@@ -1614,6 +1659,7 @@ private class SwipeQuoteAdapter(
         var triggered = false
         var lastEventTime = 0L
         var lastAction = -1
+        var lastResult = false
     }
 
     private companion object {
@@ -1623,6 +1669,7 @@ private class SwipeQuoteAdapter(
         const val MENU_REPEAT_ID = SingleMessageMenuLocator.HCHAT_REPEAT_MENU_ITEM_ID
         const val MENU_REPEAT_TITLE = "复读[H]"
         const val DEFAULT_VOICE_DURATION_MS = 1000
+        val ITEM_METHOD_NAMES = arrayOf("getItem", "K0")
         val RECYCLER_VIEW_CLASSES = arrayOf(
             "androidx.recyclerview.widget.RecyclerView",
             "android.support.v7.widget.RecyclerView"

@@ -2,7 +2,6 @@ package h.Hchat.hooks.items.chattime
 
 import android.content.SharedPreferences
 import android.view.View
-import android.widget.AbsListView
 import android.widget.TextView
 import de.robv.android.xposed.XC_MethodHook
 import h.Hchat.dexkit.DexMethodCache
@@ -64,7 +63,7 @@ private class ChatTimeStyleRuntime(
 ) {
     private data class BoundTime(
         val createTime: Long,
-        val nativeText: String,
+        val nativeText: CharSequence,
         val nativeVisibility: Int
     )
 
@@ -74,10 +73,8 @@ private class ChatTimeStyleRuntime(
     private val timeFieldCache = ConcurrentHashMap<Class<*>, Field>()
     private val unsupportedTimeHolders = ConcurrentHashMap.newKeySet<Class<*>>()
     private val bindings = Collections.synchronizedMap(WeakHashMap<TextView, BoundTime>())
-    private val lastShownByList = Collections.synchronizedMap(WeakHashMap<View, Long>())
     private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == ChatTimeStyleSettings.KEY_MODE || key == ChatTimeStyleSettings.KEY_TIME_FORMAT) {
-            lastShownByList.clear()
             refreshAttachedTimes()
         }
     }
@@ -107,6 +104,10 @@ private class ChatTimeStyleRuntime(
         }
         return runCatching {
             HookRegistry.get().hook(method, object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    restoreBoundTime(param.args)
+                }
+
                 override fun afterHookedMethod(param: MethodHookParam) {
                     bindTime(param.args)
                 }
@@ -123,27 +124,31 @@ private class ChatTimeStyleRuntime(
         val mode = currentMode()
         val holder = messageHolder(args) ?: return
         val root = findRootView(holder) ?: return
-        val taggedHolder = root.tag ?: holder
-        val timeView = findTimeView(taggedHolder) ?: findTimeView(holder) ?: return
+        val timeView = findBoundTimeView(holder, root) ?: return
+        val createTime = if (mode == ChatTimeStyleSettings.MODE_ORIGINAL) {
+            bindings[timeView]?.createTime ?: 0L
+        } else {
+            resolveNativeMessage(args?.getOrNull(1))
+                ?.let(::messageCreateTime)
+                ?: resolveNativeMessage(args)?.let(::messageCreateTime)
+                ?: 0L
+        }
+        val bound = BoundTime(
+            createTime = createTime,
+            nativeText = timeView.text ?: "",
+            nativeVisibility = timeView.visibility
+        )
+        bindings[timeView] = bound
+        if (mode == ChatTimeStyleSettings.MODE_ORIGINAL) return
         if (mode == ChatTimeStyleSettings.MODE_HIDDEN) {
-            bindings.remove(timeView)
             timeView.visibility = View.GONE
             return
         }
-        val createTime = resolveNativeMessage(args?.getOrNull(1))
-            ?.let(::messageCreateTime)
-            ?: resolveNativeMessage(args)?.let(::messageCreateTime)
-            ?: 0L
-        val bound = BoundTime(
-            createTime = createTime,
-            nativeText = timeView.text?.toString().orEmpty(),
-            nativeVisibility = timeView.visibility
-        )
         when (mode) {
-            ChatTimeStyleSettings.MODE_ORIGINAL -> applyNativeInterval(timeView, root, bound, custom = false)
-            ChatTimeStyleSettings.MODE_CUSTOM -> applyNativeInterval(timeView, root, bound, custom = true)
+            ChatTimeStyleSettings.MODE_CUSTOM -> {
+                applyStyle(timeView, bound, mode)
+            }
             else -> { // MODE_EVERY：每条消息都显示，支持自定义格式
-                bindings[timeView] = bound
                 timeView.visibility = bound.nativeVisibility
                 timeView.text = if (bound.nativeVisibility == View.VISIBLE && bound.createTime > 0L) {
                     formatTime(bound.createTime)
@@ -154,34 +159,20 @@ private class ChatTimeStyleRuntime(
         }
     }
 
-    private fun applyNativeInterval(timeView: TextView, root: View, bound: BoundTime, custom: Boolean) {
-        val listRoot = findListRoot(root)
-        val lastShown = synchronized(lastShownByList) { lastShownByList[listRoot] ?: 0L }
-        // 微信原生间隔效果：距上一条已显示的时间不足 5 分钟时隐藏，避免每条消息都显示时间
-        if (lastShown > 0L && bound.createTime > 0L &&
-            bound.createTime - lastShown < ChatTimeStyleSettings.NATIVE_INTERVAL_MS
-        ) {
-            bindings.remove(timeView)
-            timeView.visibility = View.GONE
-            return
-        }
-        if (bound.createTime > 0L) synchronized(lastShownByList) { lastShownByList[listRoot] = bound.createTime }
-        bindings[timeView] = bound
+    private fun restoreBoundTime(args: Array<Any?>?) {
+        val holder = messageHolder(args) ?: return
+        val root = findRootView(holder) ?: return
+        val timeView = findBoundTimeView(holder, root) ?: return
+        val bound = bindings[timeView] ?: return
+        timeView.text = bound.nativeText
         timeView.visibility = bound.nativeVisibility
-        timeView.text = if (custom && bound.nativeVisibility == View.VISIBLE && bound.createTime > 0L) {
-            formatTime(bound.createTime)
-        } else {
-            bound.nativeText
-        }
     }
 
-    private fun findListRoot(view: View): View {
-        var v: View? = view
-        while (v != null) {
-            if (v is AbsListView || v.javaClass.name.contains("RecyclerView")) return v
-            v = v.parent as? View
-        }
-        return view
+    private fun findBoundTimeView(holder: Any, root: View): TextView? {
+        findTimeView(holder)?.let { return it }
+        val taggedHolder = root.tag ?: return null
+        if (taggedHolder === holder) return null
+        return findTimeView(taggedHolder)
     }
 
     private fun applyStyle(view: TextView, bound: BoundTime, mode: String) {
