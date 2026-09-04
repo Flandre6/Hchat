@@ -102,12 +102,23 @@ private class InputHintRuntime(
             logger("未找到聊天输入区挂载方法", null)
             return false
         }
+        val setHintMethod = KavaReflector.declaredMethods(footerClass).singleOrNull { method ->
+            method.name == "setHint" &&
+                method.returnType == Void.TYPE &&
+                method.parameterTypes.size == 1 &&
+                method.parameterTypes[0] == CharSequence::class.java
+        } ?: run {
+            logger("未找到聊天输入区提示更新方法", null)
+            return false
+        }
         return runCatching {
-            HookRegistry.get().hook(attachMethod, object : XC_MethodHook() {
+            val bindHook = object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) {
                     bindFooter(param.thisObject)
                 }
-            })
+            }
+            HookRegistry.get().hook(attachMethod, bindHook)
+            HookRegistry.get().hook(setHintMethod, bindHook)
             inputHookInstalled = true
             true
         }.getOrElse {
