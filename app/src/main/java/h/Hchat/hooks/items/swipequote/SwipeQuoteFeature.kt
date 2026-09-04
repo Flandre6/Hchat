@@ -664,7 +664,7 @@ private class SwipeQuoteAdapter(
             state.startTranslationX = 0f
             clearSwipeVisual(row)
         }
-        if (!row.hasTransientState) {
+        if (!row.hasTransientState()) {
             // 媒体消息内部常有异步解码/播放 View，拖动期间禁止 RecyclerView 回收该行，
             // 避免重新绑定导致图片闪烁或视频画面短暂重置。
             row.setHasTransientState(true)
