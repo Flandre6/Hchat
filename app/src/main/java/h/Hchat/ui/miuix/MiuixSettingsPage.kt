@@ -3031,7 +3031,9 @@ private fun practicalFeatureGroups(
                 SwipeQuoteFeature.ID,
                 EmojiSaveFeature.ID,
                 CallMediaLimitFeature.ID,
-                CallRingtoneBlockFeature.ID
+                CallRingtoneBlockFeature.ID,
+                SecureMessageSettings.SEND_ID,
+                SecureMessageSettings.ANTI_ID
             )
         ),
         FeatureGroupEntry(
@@ -3095,7 +3097,8 @@ private fun practicalFeatureGroups(
                 RoundAvatarFeature.ID,
                 CustomFriendAvatarFeature.ID,
                 CustomBottomBarFeature.ID,
-                FloatingBottomBarSettings.FEATURE_ID
+                FloatingBottomBarSettings.FEATURE_ID,
+                HomeSidePanelFeature.ID
             )
         ),
         FeatureGroupEntry(
