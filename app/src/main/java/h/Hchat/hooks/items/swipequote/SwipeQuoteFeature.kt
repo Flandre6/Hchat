@@ -1385,7 +1385,7 @@ private class SwipeQuoteAdapter(
 
     private fun findNativeQuoteInput(footer: Any): View? {
         KavaReflector.readField(footer, "m")?.let { holder ->
-            KavaReflector.invokeMethod(holder, "j")?.let { view ->
+            KavaReflector.invokeMethod(holder, "i")?.let { view ->
                 (view as? View)?.let { return it }
             }
         }

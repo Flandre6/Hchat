@@ -667,6 +667,7 @@ object ScriptSendButtonHook {
     }
 
     internal fun findInputView(chatFooter: Any): Any? {
+        findNativeInput(chatFooter)?.let { return it }
         val clazz = chatFooter.javaClass
         val cached = synchronized(inputFieldCache) {
             if (inputFieldCache.containsKey(clazz)) inputFieldCache[clazz] else null
@@ -689,6 +690,11 @@ object ScriptSendButtonHook {
             synchronized(inputFieldCache) { inputFieldCache[clazz] = resolved }
         }
         return resolved?.let { KavaReflector.readField(it, chatFooter) }
+    }
+
+    private fun findNativeInput(chatFooter: Any): Any? {
+        val method = findNoArgMethod(chatFooter.javaClass, "getToSendEt") ?: return null
+        return KavaReflector.invoke(method, chatFooter)
     }
 
     private fun inputScore(clazz: Class<*>): Int {
