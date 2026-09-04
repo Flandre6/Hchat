@@ -14,9 +14,6 @@ object ChatTimeStyleSettings {
     const val DEFAULT_MODE = MODE_ORIGINAL
     const val DEFAULT_TIME_FORMAT = "yyyy-MM-dd HH:mm:ss"
 
-    /** 微信原生时间间隔：相邻显示的时间标签至少相隔 5 分钟 */
-    const val NATIVE_INTERVAL_MS = 5 * 60 * 1000L
-
     fun normalizeMode(value: String?): String = when (value) {
         MODE_EVERY -> MODE_EVERY
         MODE_CUSTOM -> MODE_CUSTOM
