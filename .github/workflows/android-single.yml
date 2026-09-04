@@ -3,6 +3,11 @@ name: 安卓单频道构建
 on:
   workflow_dispatch:
 
+# 同一频道的发布必须串行执行，避免两个运行同时计算出相同的版本标签。
+concurrency:
+  group: hchat-single-${{ github.ref_name }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
