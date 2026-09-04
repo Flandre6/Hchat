@@ -75,6 +75,8 @@ import h.Hchat.hooks.items.roundavatar.RoundAvatarFeature
 import h.Hchat.hooks.items.script.ScriptPluginFeature
 import h.Hchat.hooks.items.scheduledtask.ScheduledTaskFeature
 import h.Hchat.hooks.items.selectedmessages.SelectedMessagesFeature
+import h.Hchat.hooks.items.securemessage.SendSecureMessageFeature
+import h.Hchat.hooks.items.securemessage.AntiSecureMessageFeature
 import h.Hchat.hooks.items.settings.SettingsFeature
 import h.Hchat.hooks.items.shortvideo.FinderMediaDownloadFeature
 import h.Hchat.hooks.items.statuslimit.StatusTextLimitFeature
@@ -175,6 +177,8 @@ object FeatureRegistry {
             .register(VoiceForwardFeature())
             .register(SelectedMessagesFeature())
             .register(MessageForwardFeature())
+            .register(SendSecureMessageFeature())
+            .register(AntiSecureMessageFeature())
             .register(ScheduledTaskFeature())
             .register(FakeScanCameraFeature())
             .register(ProtobufPacketFeature())
