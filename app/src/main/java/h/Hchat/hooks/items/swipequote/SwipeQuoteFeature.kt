@@ -500,8 +500,6 @@ private class SwipeQuoteAdapter(
                     } else if (state == null) {
                         return
                     }
-                    if (!isEnabled()) return
-                    val state = recyclerStates[view]
                     // 只在 ACTION_DOWN 做一次递归命中查找。MOVE/UP 使用 DOWN
                     // 时缓存的目标，避免群聊滚动过程中反复遍历整棵消息 View 树。
                     val hit = if (event.actionMasked == MotionEvent.ACTION_DOWN) {
@@ -527,17 +525,12 @@ private class SwipeQuoteAdapter(
         if (args.size < 2) return
         val holder = args[0] ?: return
         val position = args[1] as? Int ?: return
-        val item = adapterItem(param.thisObject ?: return, position)
-            ?: holderMessage(holder)
-            ?: return
-        val msg = resolveNativeMessage(item) ?: return
-        val msgId = messageId(msg)
-        if (msgId <= 0L) return
-        val talker = WeChatApis.chatPage()?.currentTalker().orEmpty()
         val root = findRootView(holder) ?: return
         clearSwipeVisual(root)
         rootTargets.remove(root)
-        val item = adapterItem(param.thisObject ?: return, position) ?: return
+        val item = adapterItem(param.thisObject ?: return, position)
+            ?: holderMessage(holder)
+            ?: return
         val msg = resolveNativeMessage(item) ?: run {
             rootTargets.remove(root)
             return
@@ -606,10 +599,7 @@ private class SwipeQuoteAdapter(
             MotionEvent.ACTION_MOVE -> {
                 if (!state.tracking) return false
                 if (state.triggered) return true
-                val activeHit = state.hit ?: resolveQuoteHit(hit) ?: return false
-                if (!state.tracking) return false.also { state.lastResult = it }
-                if (state.triggered) return true.also { state.lastResult = it }
-                val activeHit = state.hit ?: hit ?: return false.also { state.lastResult = it }
+                val activeHit = state.hit ?: resolveQuoteHit(hit) ?: return false.also { state.lastResult = it }
                 val dx = event.rawX - state.downX
                 val dy = event.rawY - state.downY
                 if (!state.dragging && abs(dy) > dp(32f) && abs(dy) > abs(dx) * 1.2f) {
@@ -673,7 +663,6 @@ private class SwipeQuoteAdapter(
                     view.parent?.requestDisallowInterceptTouchEvent(false)
                     state.interceptDisallowed = false
                 }
-                view.parent?.requestDisallowInterceptTouchEvent(false)
                 state.lastResult = consume
                 return consume
             }
