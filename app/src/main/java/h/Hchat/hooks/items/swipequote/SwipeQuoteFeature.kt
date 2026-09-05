@@ -493,8 +493,13 @@ private class SwipeQuoteAdapter(
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     val view = param.thisObject as? View ?: return
                     val event = param.args?.getOrNull(0) as? MotionEvent ?: return
-                    if (!isEnabled()) return
                     val state = recyclerStates[view]
+                    // 配置只在一次手势开始时读取；MOVE/UP 不再反复访问 FastKV。
+                    if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                        if (!isAnyGestureEnabled()) return
+                    } else if (state == null) {
+                        return
+                    }
                     // 只在 ACTION_DOWN 做一次递归命中查找。MOVE/UP 使用 DOWN
                     // 时缓存的目标，避免群聊滚动过程中反复遍历整棵消息 View 树。
                     val hit = if (event.actionMasked == MotionEvent.ACTION_DOWN) {
@@ -523,7 +528,9 @@ private class SwipeQuoteAdapter(
         val root = findRootView(holder) ?: return
         clearSwipeVisual(root)
         rootTargets.remove(root)
-        val item = adapterItem(param.thisObject ?: return, position) ?: return
+        val item = adapterItem(param.thisObject ?: return, position)
+            ?: holderMessage(holder)
+            ?: return
         val msg = resolveNativeMessage(item) ?: run {
             rootTargets.remove(root)
             return
@@ -540,6 +547,17 @@ private class SwipeQuoteAdapter(
             WeChatApis.chatPage()?.currentTalker().orEmpty()
         }
         rootTargets[root] = QuoteTarget(talker, msgId, msg)
+    }
+
+    private fun holderMessage(holder: Any): Any? {
+        KavaReflector.invokeMethod(holder, "n")?.let { value ->
+            resolveNativeMessage(value)?.let { return it }
+        }
+        for (fieldName in arrayOf("i", "h")) {
+            val value = KavaReflector.readField(holder, fieldName) ?: continue
+            resolveNativeMessage(value)?.let { return it }
+        }
+        return null
     }
 
     private fun handleTouch(
@@ -559,9 +577,15 @@ private class SwipeQuoteAdapter(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 resetSwipeVisual(state)
+                state.quoteEnabled = isQuoteEnabled()
+                state.repeatEnabled = isRepeatEnabled()
+                if (!state.quoteEnabled && !state.repeatEnabled) {
+                    state.tracking = false
+                    return false
+                }
                 state.downX = event.rawX
                 state.downY = event.rawY
-                state.hit = hit
+                state.hit = resolveQuoteHit(hit)
                 state.direction = SwipeDirection.NONE
                 state.dragging = false
                 state.armed = false
@@ -573,13 +597,11 @@ private class SwipeQuoteAdapter(
                 state.lastResult = false
             }
             MotionEvent.ACTION_MOVE -> {
-                if (!state.tracking) return false.also { state.lastResult = it }
-                if (state.triggered) return true.also { state.lastResult = it }
-                val activeHit = state.hit ?: hit ?: return false.also { state.lastResult = it }
+                if (!state.tracking) return false
+                if (state.triggered) return true
+                val activeHit = state.hit ?: resolveQuoteHit(hit) ?: return false.also { state.lastResult = it }
                 val dx = event.rawX - state.downX
                 val dy = event.rawY - state.downY
-                val quoteEnabled = isQuoteEnabled()
-                val repeatEnabled = isRepeatEnabled()
                 if (!state.dragging && abs(dy) > dp(32f) && abs(dy) > abs(dx) * 1.2f) {
                     resetSwipeVisual(state)
                     state.tracking = false
@@ -589,8 +611,8 @@ private class SwipeQuoteAdapter(
                     val quoteHorizontalEnough = abs(dx) > dp(6f) && abs(dx) > abs(dy) * 1.15f
                     val repeatHorizontalEnough = abs(dx) > dp(18f) && abs(dx) > abs(dy) * 1.35f
                     val direction = when {
-                        quoteHorizontalEnough && dx < 0f && quoteEnabled -> SwipeDirection.LEFT_QUOTE
-                        repeatHorizontalEnough && dx > 0f && repeatEnabled -> SwipeDirection.RIGHT_REPEAT
+                        quoteHorizontalEnough && dx < 0f && state.quoteEnabled -> SwipeDirection.LEFT_QUOTE
+                        repeatHorizontalEnough && dx > 0f && state.repeatEnabled -> SwipeDirection.RIGHT_REPEAT
                         else -> SwipeDirection.NONE
                     }
                     if (direction == SwipeDirection.NONE) return false.also { state.lastResult = it }
@@ -602,7 +624,10 @@ private class SwipeQuoteAdapter(
                     SwipeDirection.RIGHT_REPEAT -> dx.coerceAtLeast(0f)
                     SwipeDirection.NONE -> return false.also { state.lastResult = it }
                 }.coerceAtMost(dp(150f))
-                view.parent?.requestDisallowInterceptTouchEvent(true)
+                if (!state.interceptDisallowed) {
+                    view.parent?.requestDisallowInterceptTouchEvent(true)
+                    state.interceptDisallowed = true
+                }
                 state.armed = drag >= triggerDistance(state.direction)
                 updateSwipeVisual(state, activeHit, drag)
                 if (state.armed && !state.hapticSent) {
@@ -612,7 +637,7 @@ private class SwipeQuoteAdapter(
                 return true.also { state.lastResult = it }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                val activeHit = state.hit ?: hit
+                val activeHit = state.hit ?: resolveQuoteHit(hit)
                 val triggered = if (event.actionMasked == MotionEvent.ACTION_UP && state.armed && activeHit != null) {
                     when (state.direction) {
                         SwipeDirection.LEFT_QUOTE -> showNativeQuote(activeHit.row, activeHit.target)
@@ -634,7 +659,10 @@ private class SwipeQuoteAdapter(
                 state.dragging = false
                 state.armed = false
                 state.hapticSent = false
-                view.parent?.requestDisallowInterceptTouchEvent(false)
+                if (state.interceptDisallowed) {
+                    view.parent?.requestDisallowInterceptTouchEvent(false)
+                    state.interceptDisallowed = false
+                }
                 state.lastResult = consume
                 return consume
             }
@@ -650,6 +678,24 @@ private class SwipeQuoteAdapter(
             state.startTranslationX = 0f
             clearSwipeVisual(row)
         }
+        if (!row.hasTransientState()) {
+            // 媒体消息内部常有异步解码/播放 View，拖动期间禁止 RecyclerView 回收该行，
+            // 避免重新绑定导致图片闪烁或视频画面短暂重置。
+            row.setHasTransientState(true)
+        }
+        // 触摸采样可能高于屏幕刷新率，合并到下一帧只应用最后一次位移。
+        state.pendingDrag = drag
+        val generation = state.visualGeneration
+        if (state.visualFramePosted) return
+        state.visualFramePosted = true
+        row.postOnAnimation {
+            state.visualFramePosted = false
+            if (generation != state.visualGeneration || state.visualRow !== row) return@postOnAnimation
+            applySwipeVisual(state, row, state.pendingDrag)
+        }
+    }
+
+    private fun applySwipeVisual(state: TouchState, row: View, drag: Float) {
         val maxOffset = dp(132f)
         val offset = drag.coerceAtMost(maxOffset)
         row.translationX = when (state.direction) {
@@ -657,10 +703,11 @@ private class SwipeQuoteAdapter(
             SwipeDirection.RIGHT_REPEAT -> state.startTranslationX + offset
             SwipeDirection.NONE -> state.startTranslationX
         }
-        row.alpha = 1f - 0.07f * (offset / maxOffset).coerceIn(0f, 1f)
     }
 
     private fun resetSwipeVisual(state: TouchState) {
+        state.visualGeneration++
+        state.visualFramePosted = false
         val row = state.visualRow ?: return
         row.animate().cancel()
         row.animate()
@@ -670,6 +717,7 @@ private class SwipeQuoteAdapter(
             .withEndAction {
                 row.translationX = 0f
                 row.alpha = 1f
+                row.setHasTransientState(false)
             }
             .start()
         state.visualRow = null
@@ -681,6 +729,7 @@ private class SwipeQuoteAdapter(
         row.animate().cancel()
         if (row.translationX != 0f) row.translationX = 0f
         if (row.alpha != 1f) row.alpha = 1f
+        row.setHasTransientState(false)
     }
 
     private fun showNativeQuote(row: View, target: QuoteTarget): Boolean {
@@ -1273,6 +1322,14 @@ private class SwipeQuoteAdapter(
         return QuoteTarget(talker, msgId, nativeMessage).also { rootTargets[view] = it }
     }
 
+    private fun resolveQuoteHit(hit: QuoteHit?): QuoteHit? {
+        val value = hit ?: return null
+        if (value.target.talker.isNotBlank()) return value
+        val talker = WeChatApis.chatPage()?.currentTalker().orEmpty()
+        if (talker.isBlank()) return value
+        return value.copy(target = value.target.copy(talker = talker))
+    }
+
     private fun refreshQuoteUi(footer: Any) {
         val method = findQuoteVisibilityMethod(footer.javaClass)
         if (method != null && KavaReflector.invokeSuccessfully(method, footer, View.VISIBLE)) {
@@ -1591,7 +1648,7 @@ private class SwipeQuoteAdapter(
         return parameterType.isAssignableFrom(value.javaClass)
     }
 
-    private fun isEnabled(): Boolean {
+    private fun isAnyGestureEnabled(): Boolean {
         return isQuoteEnabled() || isRepeatEnabled()
     }
 
@@ -1657,6 +1714,12 @@ private class SwipeQuoteAdapter(
         var armed = false
         var hapticSent = false
         var triggered = false
+        var quoteEnabled = false
+        var repeatEnabled = false
+        var interceptDisallowed = false
+        var pendingDrag = 0f
+        var visualGeneration = 0L
+        var visualFramePosted = false
         var lastEventTime = 0L
         var lastAction = -1
         var lastResult = false
@@ -1671,6 +1734,7 @@ private class SwipeQuoteAdapter(
         const val DEFAULT_VOICE_DURATION_MS = 1000
         val ITEM_METHOD_NAMES = arrayOf("getItem", "K0")
         val RECYCLER_VIEW_CLASSES = arrayOf(
+            "com.tencent.mm.pluginsdk.ui.tools.ChattingRecyclerView",
             "androidx.recyclerview.widget.RecyclerView",
             "android.support.v7.widget.RecyclerView"
         )

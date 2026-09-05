@@ -60,3 +60,9 @@
     java.lang.String m;
     java.lang.String d;
 }
+# API 102 modern Xposed entry metadata.
+-dontwarn io.github.libxposed.annotation.**
+-adaptresourcefilecontents META-INF/xposed/java_init.list
+-keep,allowoptimization,allowobfuscation public class h.Hchat.Api102ModuleEntry {
+    public <init>();
+}

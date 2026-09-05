@@ -19,6 +19,7 @@
 - 修改代码后先推送；确认需要出包时，再手动运行工作流并检查 Release。
 - 工作流每次构建都会同时拉取 `main` 和 `alt-entry` 两个分支，使用同一个 `versionName/versionCode` 分别构建主线包和 `alt-entry` 包，然后按当前最高 `v*` tag 创建下一个 Release。版本名三段都按 0-9 进位，`patch` 超过 9 进到 `minor`，`minor` 超过 9 进到 `major`，避免生成 `1.10.x` 这类未归一化版本。Release 标题只显示模块版本号并标记为 GitHub Latest；资产里同时包含 `Hchat-release-signed.apk` 和 `Hchat-alt-entry-release-signed.apk`。APK `versionCode` 使用 GitHub Actions 构建编号。
 - 除了双频道工作流 `.github/workflows/android.yml` 外，还提供单频道工作流 `.github/workflows/android-single.yml`。单频道工作流只拉取当前触发分支并只构建当前频道 APK：`main` 产物是 `Hchat-release-signed.apk`，`alt-entry` 产物是 `Hchat-alt-entry-release-signed.apk`。单频道版本以本地已使用的 `5.5.6 (490)` 和该工作流运行号 `294` 为对齐锚点；计算 `versionName` 时会把 `5.5.6` 与现有 Release/tag 一并取最高版本后递增，`versionCode` 按锚点后的单频道运行次数递增，因此下一次单频道构建为 `5.5.7 (491)`。签名、Release notes 和 Telegram 推送规则保持不变；双频道与无 R8 测试工作流的版本计算不受此锚点影响。
+- 单频道发布工作流按触发分支启用并发组且不取消排队任务，同一频道的版本计算、APK 构建和 Release 创建会串行执行，避免并发运行同时选中同一个版本标签。
 - 日常安装验证使用 `.github/workflows/android-test.yml` 的“安卓测试构建（无 R8）”。它只构建当前触发分支，临时关闭 release build type 的代码压缩混淆和资源压缩，并跳过 release lint，因此不会执行 R8；测试包仍使用正式证书签名，并使用 GitHub Actions 构建编号作为 `versionCode`。`main` 产物是 `Hchat-test-signed.apk`，`alt-entry` 产物是 `Hchat-alt-entry-test-signed.apk`。测试工作流只上传 Actions Artifact，不创建 tag、GitHub Release 或 Telegram 消息；正式发布仍必须使用保留 R8 的单频道或双频道构建工作流。
 - GitHub Actions 工作流通过 `gradle/actions/setup-gradle` 复用 Gradle 用户目录与 build cache；手动触发的 `main` 和 `alt-entry` 均允许写入缓存，且因仓库现有 wrapper JAR 不在 action 已知哈希清单中而关闭该 action 的重复 wrapper 校验，并以 `--build-cache --parallel` 执行构建；双频道工作流在同一 runner 中并行执行主线和 `alt-entry` 的 assemble，完成后再统一发布。首次运行需要填充缓存，后续运行通常收益更明显。
 - Release notes 只列出上一个发行版之后的提交标题列表，不显示模块版本、版本 Code、构建提交、构建编号或提交哈希；模块关于页和脚本变量 `moduleVer` 只显示 `versionName`，不主动拼接 `versionCode`。
@@ -282,7 +283,7 @@ Protobuf 抓包复用 `ProtobufPacketHook` 的唯一网络入口，通过 `onPro
 
 插件列表里的单插件开关必须实时生效：新插件默认关闭，打开时立刻执行对应目录的 `main.java`，关闭时立刻卸载对应插件。加载失败时自动关闭该插件，Toast 文案固定为 `加载[插件名]失败，已自动关闭`，不要在 Toast 里显示完整异常。插件加载失败必须写入当前插件目录的 `log.txt`，内容保留异常类型和简短 message，不写完整堆栈。`log(...)` 必须写入当前插件目录的 `log.txt`，并同步输出到 LSPosed 日志；`toast(...)` 自动带上当前插件名前缀。
 
-脚本运行时默认导入 `XposedBridge`、`XposedHelpers`、`XC_MethodHook`，同时注入 `XposedBridgeClass`、`XposedHelpersClass`、`XC_MethodHookClass`，脚本可以直接使用 LSPosed/Xposed 原生写法。为了贴近 WA 的脚本体验，还提供轻量封装：`findClass(className)`、`hookBefore(member, callback)`、`hookAfter(member, callback)`、`hookReplace(member, callback)`、`unhook(handle)`。通过这些封装注册的 hook 会按插件 ID 记录，插件关闭或加载失败时会自动清理。
+脚本运行时默认导入 `XposedBridge`、`XposedHelpers`、`XC_MethodHook`，同时注入 `XposedBridgeClass`、`XposedHelpersClass`、`XC_MethodHookClass`，脚本可以直接使用 LSPosed/Xposed 原生写法。为了贴近 WA 的脚本体验，还提供轻量封装：`findClass(className)`、`hookBefore(member, callback)`、`hookAfter(member, callback)`、`hookReplace(member, callback)`、`unhook(handle)`。通过这些封装注册的 hook 会按插件 ID 记录，插件关闭或加载失败时会自动清理。脚本 Hook 与同一插件的其它 BeanShell 回调共用非阻塞解释器锁；解释器忙碌时跳过当前脚本 Hook 并继续微信原方法，按插件、类型和目标成员限频记录，避免同步网络脚本阻塞消息绑定主线程。
 
 脚本支持调用模块共享 DexKit，不要在脚本里自行初始化 DexKit。运行时会注入 `dexKit`、`dexKitBridge`、`dexFinder`、`dexBridgeHolder`，以及 `DexKitBridgeClass`、`DexFinderClass`、`DexBridgeHolderClass`。WA 风格简化函数包括 `findClassList(usingStrings)` 和 `findMemberList(usingStrings)`，参数兼容 WA 常见的 `{"keyword"}` 大括号数组、字符串、数组、`Object[]` 或 `List`；返回值分别是可直接使用的 `Class<?>` 列表和可直接配合 `hookBefore/hookAfter` 的 `Member` 列表。`findMemberList` 会同时收集方法命中和类命中的构造函数/方法，尽量保持旧 WA 插件不改写即可迁移。
 
@@ -1933,3 +1934,18 @@ fun onEvent() {
 - If settings are cached, refresh the cache before processing events or when the settings page saves.
 - If a WeChat internal detail is uncertain, reverse engineer first. Do not guess class names, method names, fields, database tables, intent extras, or request parameters.
 - Put every new file in the correct layer. Feature-specific code belongs in `hooks/items/<feature>/**`; only reusable verified WeChat APIs belong in `hooks/api/**`.
+
+### 安全消息
+
+`securemessage` 提供两个相互独立的设置入口：`安全消息` 在自己发送的文本和引用回复入库前加入
+`sec_msg_node` 标记；引用回复按外层 AppMsg `type=49` 和 XML 中 `<appmsg><type>57</type>` 识别，普通
+AppMsg 卡片不会被误加标记。`反安全消息` 会关闭微信对该标记的识别检查，并在已确认的本地消息入库
+API 上清除新收到消息的安全标记，以恢复普通消息操作菜单；自己发送的消息不参与清除。对于已在本地库中的
+安全消息，模块仅在已确认的单消息长按菜单创建期间临时移除当前消息对象的标记，菜单构建结束立即还原，避免
+改写历史消息或扩大到其它微信安全控制链路。
+两个功能默认开启，运行时通过 `Hchat_secure_message` 和 `Hchat_anti_secure_message` 配置；
+DexKit 方法描述符分别缓存到独立缓存中，并按微信版本、APK/热更新和 ClassLoader 运行时 key 失效。
+当前实现优先使用已解析的本地消息插入 API，并以稳定字符串定位兜底；发送标记写入兼容
+`field_msgSource/msgSource` 以及 8.0.77 `MsgInfo(e9)` 使用的混淆字段 `G`；反安全消息会对有限数量的
+单参数布尔检查候选安装 Hook，并记录首次拦截和首次入库清除，便于从 LSPosed 日志确认命中。未在设备上对微信 8.0.77 完成真机验证，仍需使用目标 APK 和
+LSPosed 日志确认定位结果。
