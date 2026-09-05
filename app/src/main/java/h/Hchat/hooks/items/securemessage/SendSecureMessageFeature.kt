@@ -7,13 +7,14 @@ import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
+import h.Hchat.hooks.api.model.WeChatMessageTypes
 import h.Hchat.preferences.HchatStorage
 import h.Hchat.utils.KavaReflector
 import org.luckypray.dexkit.query.FindMethod
 import org.luckypray.dexkit.query.matchers.MethodMatcher
 import java.lang.reflect.Method
 
-/** Injects the WeChat secure-message marker before outgoing text messages are stored. */
+/** Injects the WeChat secure-message marker before outgoing supported messages are stored. */
 class SendSecureMessageFeature : BaseFeature() {
     @Volatile private var installed = false
     private var prefs: android.content.SharedPreferences? = null
@@ -111,7 +112,7 @@ class SendSecureMessageFeature : BaseFeature() {
             }
         } else if (!markerLogged) {
             markerLogged = true
-            logInfo("安全消息标记已写入文本消息")
+            logInfo("安全消息标记已写入消息")
         }
     }
 
@@ -136,7 +137,29 @@ class SendSecureMessageFeature : BaseFeature() {
         val send = readNumber(message, "field_isSend", "isSend", "getIsSend", "getSend")
         if (send?.toInt() != 1) return false
         val type = readNumber(message, "field_type", "type", "getType", "getMsgType")
-        return type == null || type.toInt() == 1 || type.toInt() == 47
+        if (type == null) return true
+        return when {
+            WeChatMessageTypes.isText(type.toInt()) -> true
+            WeChatMessageTypes.isEmoji(type.toInt()) -> true
+            WeChatMessageTypes.isApp(type.toInt()) -> isQuoteReply(message)
+            else -> false
+        }
+    }
+
+    /**
+     * Quote replies are stored as an AppMsg (outer type 49) whose appmsg type is 57.
+     * Other AppMsg cards must not inherit the secure-message marker implicitly.
+     */
+    private fun isQuoteReply(message: Any): Boolean {
+        val content = readContent(message)
+        return QUOTE_APPMSG_TYPE.containsMatchIn(content)
+    }
+
+    private fun readContent(message: Any): String {
+        return (KavaReflector.readField(message, "field_content") as? String)
+            ?: (KavaReflector.readField(message, "content") as? String)
+            ?: (KavaReflector.invokeMethod(message, "getContent") as? String)
+            .orEmpty()
     }
 
     private fun readNumber(receiver: Any, vararg names: String): Number? {
@@ -197,5 +220,6 @@ class SendSecureMessageFeature : BaseFeature() {
         val SOURCE_SETTERS = arrayOf("setMsgSource", "setMsgsource", "setSource")
         // 8.0.77 (e9) stores MsgInfo.msgSource in the obfuscated G field.
         val SOURCE_FIELDS = arrayOf("field_msgSource", "msgSource", "G", "g")
+        val QUOTE_APPMSG_TYPE = Regex("<type>\\s*57\\s*</type>", RegexOption.IGNORE_CASE)
     }
 }

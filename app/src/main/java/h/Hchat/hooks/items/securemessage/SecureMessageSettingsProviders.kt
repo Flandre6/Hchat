@@ -6,7 +6,7 @@ import h.Hchat.ui.SimpleFeatureSettingsProvider
 class SendSecureMessageSettingsProvider : SimpleFeatureSettingsProvider(
     SecureMessageSettings.SEND_ID,
     "安全消息",
-    "给自己发送的文本消息添加 sec_msg_node 标记",
+    "给自己发送的文本和引用回复添加 sec_msg_node 标记",
     FeatureSettingsProvider.CATEGORY_PRACTICAL
 )
 
