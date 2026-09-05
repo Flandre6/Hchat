@@ -17435,6 +17435,14 @@ private fun ChatTimeStyleMiuixPage(
     onBack: () -> Unit
 ) {
     val sp = remember { HchatStorage.preferences(context, ChatTimeStyleSettings.PREFS_NAME) }
+    var enabled by remember {
+        mutableStateOf(
+            sp.getBoolean(
+                ChatTimeStyleSettings.KEY_ENABLE,
+                ChatTimeStyleSettings.DEFAULT_ENABLE
+            )
+        )
+    }
     var mode by remember {
         mutableStateOf(
             ChatTimeStyleSettings.normalizeMode(
@@ -17470,31 +17478,43 @@ private fun ChatTimeStyleMiuixPage(
             item { SmallTitle(text = "聊天时间") }
             item {
                 SettingsCard {
-                    PopupChoiceRow(
-                        title = "显示方式",
-                        summary = chatTimeModeLabel(mode),
-                        options = chatTimeModeChoices(),
-                        currentValue = mode,
-                        onValueChanged = {
-                            mode = ChatTimeStyleSettings.normalizeMode(it)
-                            sp.edit().putString(ChatTimeStyleSettings.KEY_MODE, mode).apply()
+                    SwitchRow(
+                        checked = enabled,
+                        title = "启用会话时间样式",
+                        summary = "关闭后完全交给微信原生处理",
+                        onCheckedChange = {
+                            enabled = it
+                            sp.edit().putBoolean(ChatTimeStyleSettings.KEY_ENABLE, it).apply()
                         }
                     )
-                    if (mode == ChatTimeStyleSettings.MODE_CUSTOM ||
-                        mode == ChatTimeStyleSettings.MODE_EVERY
-                    ) {
+                    if (enabled) {
                         InsetDivider()
-                        InputRow(
-                            title = "时间格式",
-                            summary = "例如 yyyy-MM-dd HH:mm:ss",
-                            value = timeFormat,
-                            onValueChange = {
-                                timeFormat = it
-                                sp.edit()
-                                    .putString(ChatTimeStyleSettings.KEY_TIME_FORMAT, it)
-                                    .apply()
+                        PopupChoiceRow(
+                            title = "显示方式",
+                            summary = chatTimeModeLabel(mode),
+                            options = chatTimeModeChoices(),
+                            currentValue = mode,
+                            onValueChanged = {
+                                mode = ChatTimeStyleSettings.normalizeMode(it)
+                                sp.edit().putString(ChatTimeStyleSettings.KEY_MODE, mode).apply()
                             }
                         )
+                        if (mode == ChatTimeStyleSettings.MODE_CUSTOM ||
+                            mode == ChatTimeStyleSettings.MODE_EVERY
+                        ) {
+                            InsetDivider()
+                            InputRow(
+                                title = "时间格式",
+                                summary = "例如 yyyy-MM-dd HH:mm:ss",
+                                value = timeFormat,
+                                onValueChange = {
+                                    timeFormat = it
+                                    sp.edit()
+                                        .putString(ChatTimeStyleSettings.KEY_TIME_FORMAT, it)
+                                        .apply()
+                                }
+                            )
+                        }
                     }
                 }
             }
