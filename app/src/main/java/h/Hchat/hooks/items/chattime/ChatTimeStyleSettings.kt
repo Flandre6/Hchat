@@ -3,6 +3,7 @@ package h.Hchat.hooks.items.chattime
 object ChatTimeStyleSettings {
     const val PREFS_NAME = "Hchat_chat_time_style_config"
 
+    const val KEY_ENABLE = "chat_time_enable"
     const val KEY_MODE = "chat_time_mode"
     const val KEY_TIME_FORMAT = "chat_time_format"
 
@@ -11,6 +12,7 @@ object ChatTimeStyleSettings {
     const val MODE_CUSTOM = "custom"
     const val MODE_HIDDEN = "hidden"
 
+    const val DEFAULT_ENABLE = true
     const val DEFAULT_MODE = MODE_ORIGINAL
     const val DEFAULT_TIME_FORMAT = "yyyy-MM-dd HH:mm:ss"
 

@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color as AndroidColor
 import android.os.Bundle
+import android.os.Handler
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
@@ -79,6 +80,7 @@ import top.yukonga.miuix.kmp.theme.lightColorScheme
 internal object ConversationGroupQuickDialog {
     private const val TAG = "[Hchat:ConversationGroup]"
     private val active = Collections.synchronizedMap(WeakHashMap<Activity, OverlayHandle>())
+    private val main = Handler(Looper.getMainLooper())
 
     fun show(activity: Activity, talker: String, onChanged: () -> Unit) {
         val normalizedTalker = talker.trim()
@@ -100,6 +102,24 @@ internal object ConversationGroupQuickDialog {
             )
         }
         if (handle.isShowing()) active[activity] = handle
+    }
+
+    fun close(activity: Activity) {
+        val action = {
+            active.remove(activity)?.close()
+            Unit
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) action() else activity.runOnUiThread(action)
+    }
+
+    fun closeAll() {
+        val action = {
+            val handles = synchronized(active) {
+                active.values.toList().also { active.clear() }
+            }
+            handles.forEach(OverlayHandle::close)
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) action() else main.post(action)
     }
 
     private fun resolveTarget(activity: Activity, talker: String): Target? {
@@ -748,6 +768,13 @@ internal object ConversationGroupQuickDialog {
             if (Looper.myLooper() == Looper.getMainLooper()) cleanup()
             else activity.runOnUiThread(cleanup)
         }
+        root.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(view: View) = Unit
+
+            override fun onViewDetachedFromWindow(view: View) {
+                closeDialog()
+            }
+        })
         compose = ComposeView(activity).apply {
             owner.install(this)
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
