@@ -1,8 +1,10 @@
 package h.Hchat.hooks.items.securemessage
 
+import android.view.View
 import de.robv.android.xposed.XC_MethodHook
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
+import h.Hchat.hooks.api.message.SingleMessageMenuLocator
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
@@ -17,11 +19,15 @@ import java.lang.reflect.Method
 class AntiSecureMessageFeature : BaseFeature() {
     @Volatile private var checkInstalled = false
     @Volatile private var stripInstalled = false
+    @Volatile private var menuInstalled = false
     private var prefs: android.content.SharedPreferences? = null
     private lateinit var methodPrefs: android.content.SharedPreferences
     @Volatile private var interceptedLogged = false
     @Volatile private var disabledHitLogged = false
     @Volatile private var strippedLogged = false
+    @Volatile private var menuMarkerHiddenLogged = false
+    @Volatile private var menuMarkerRestoreFailedLogged = false
+    private val menuMarkerStates = ThreadLocal<ArrayDeque<MenuMarkerState>>()
 
     override fun featureId(): String = SecureMessageSettings.ANTI_ID
     override fun name(): String = "反安全消息"
@@ -44,7 +50,7 @@ class AntiSecureMessageFeature : BaseFeature() {
 
     @Synchronized
     private fun installHooks(context: FeatureContext): Boolean {
-        if (checkInstalled && stripInstalled) return true
+        if (checkInstalled && stripInstalled && menuInstalled) return true
         val runtimeKey = methodCacheKey(context)
         if (runtimeKey.isBlank()) {
             logError("反安全消息安装跳过：微信运行时版本信息未就绪", null)
@@ -52,7 +58,8 @@ class AntiSecureMessageFeature : BaseFeature() {
         }
         val checksReady = if (checkInstalled) true else installCheckHooks(context, runtimeKey)
         val stripReady = if (stripInstalled) true else installIncomingMarkerStrip(context)
-        return checksReady || stripReady
+        val menuReady = if (menuInstalled) true else installMenuMarkerHooks(context)
+        return checksReady || stripReady || menuReady
     }
 
     private fun installCheckHooks(context: FeatureContext, runtimeKey: String): Boolean {
@@ -140,6 +147,103 @@ class AntiSecureMessageFeature : BaseFeature() {
         }
     }
 
+    /**
+     * The direct security check is not the only menu gate on 8.0.77.  The verified
+     * single-message menu creator receives the selected row as its second parameter,
+     * so hide the marker only while that creator builds this one menu.  The original
+     * source is restored in the matching after callback and is never persisted here.
+     */
+    private fun installMenuMarkerHooks(context: FeatureContext): Boolean {
+        val methods = SingleMessageMenuLocator.menuCreateMethods(context) { message, throwable ->
+            logError(message, throwable)
+        }
+        if (methods.isEmpty()) {
+            logError("反安全消息菜单创建方法未定位到", null)
+            return false
+        }
+        var hooked = false
+        methods.forEach { method ->
+            val installed = runCatching {
+                HookRegistry.get().hook(method, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val states = menuMarkerStates.get()
+                            ?: ArrayDeque<MenuMarkerState>().also { menuMarkerStates.set(it) }
+                        states.addLast(hideMenuMarker(param))
+                    }
+
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val states = menuMarkerStates.get() ?: return
+                        val state = if (states.isEmpty()) null else states.removeLast()
+                        if (states.isEmpty()) menuMarkerStates.remove()
+                        restoreMenuMarker(state)
+                    }
+                })
+                true
+            }.getOrElse {
+                logError("反安全消息菜单Hook安装失败: ${method.toGenericString()}", it)
+                false
+            }
+            hooked = hooked || installed
+        }
+        if (hooked) {
+            menuInstalled = true
+            logInfo("反安全消息菜单恢复 Hook 已安装: ${methods.size} 个入口")
+        }
+        return hooked
+    }
+
+    private fun hideMenuMarker(param: XC_MethodHook.MethodHookParam): MenuMarkerState {
+        if (!enabled()) return MenuMarkerState.None
+        val view = param.args?.getOrNull(1) as? View ?: return MenuMarkerState.None
+        val message = resolveNativeMessage(view.tag) ?: return MenuMarkerState.None
+        val source = readMessageSource(message)
+        if (!SECURE_NODE.containsMatchIn(source)) return MenuMarkerState.None
+        val stripped = SECURE_NODE.replace(source, "")
+        if (!setMessageSource(message, stripped)) {
+            if (!menuMarkerRestoreFailedLogged) {
+                menuMarkerRestoreFailedLogged = true
+                logError("反安全消息菜单恢复失败: 当前消息 msgSource 不可写", null)
+            }
+            return MenuMarkerState.None
+        }
+        if (!menuMarkerHiddenLogged) {
+            menuMarkerHiddenLogged = true
+            logInfo("反安全消息已在长按菜单构建期间临时隐藏安全标记")
+        }
+        return MenuMarkerState.Restorable(message, source)
+    }
+
+    private fun restoreMenuMarker(state: MenuMarkerState?) {
+        val restorable = state as? MenuMarkerState.Restorable ?: return
+        if (!setMessageSource(restorable.message, restorable.source) && !menuMarkerRestoreFailedLogged) {
+            menuMarkerRestoreFailedLogged = true
+            logError("反安全消息菜单恢复后无法还原安全标记", null)
+        }
+    }
+
+    private fun resolveNativeMessage(tag: Any?): Any? {
+        tag ?: return null
+        if (isNativeMessage(tag)) return tag
+        var owner: Class<*>? = tag.javaClass
+        while (owner != null && owner != Any::class.java) {
+            for (field in KavaReflector.declaredFields(owner)) {
+                if (KavaReflector.isStatic(field) || !field.type.name.startsWith(MESSAGE_PACKAGE)) continue
+                KavaReflector.readField(field, tag)?.takeIf(::isNativeMessage)?.let { return it }
+            }
+            for (method in KavaReflector.declaredMethods(owner)) {
+                if (KavaReflector.isStatic(method) || method.parameterTypes.isNotEmpty()) continue
+                if (!method.returnType.name.startsWith(MESSAGE_PACKAGE)) continue
+                KavaReflector.invoke(method, tag)?.takeIf(::isNativeMessage)?.let { return it }
+            }
+            owner = owner.superclass
+        }
+        return null
+    }
+
+    private fun isNativeMessage(value: Any): Boolean =
+        value.javaClass.name.startsWith(MESSAGE_PACKAGE) &&
+            (readNumber(value, "getMsgId", "field_msgId", "msgId", "msgID")?.toLong() ?: 0L) > 0L
+
     private fun enabled(): Boolean = prefs?.getBoolean(SecureMessageSettings.KEY_ENABLE, SecureMessageSettings.DEFAULT_ENABLE) == true
 
     private fun isMessageLike(value: Any): Boolean =
@@ -159,7 +263,7 @@ class AntiSecureMessageFeature : BaseFeature() {
 
     private fun readMessageSource(message: Any): String {
         for (fieldName in SOURCE_FIELDS) {
-            (KavaReflector.readField(message, fieldName) as? String)?.let { return it }
+            (KavaReflector.readField(message, fieldName) as? String)?.takeIf { it.isNotBlank() }?.let { return it }
         }
         return (KavaReflector.invokeMethod(message, "getMsgSource") as? String).orEmpty()
     }
@@ -214,5 +318,11 @@ class AntiSecureMessageFeature : BaseFeature() {
         // 8.0.77 (e9) stores MsgInfo.msgSource in the obfuscated G field.
         val SOURCE_FIELDS = arrayOf("field_msgSource", "msgSource", "G", "g")
         val SECURE_NODE = Regex("<sec_msg_node\\b[^>]*>.*?</sec_msg_node>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+        const val MESSAGE_PACKAGE = "com.tencent.mm.storage."
+    }
+
+    private sealed interface MenuMarkerState {
+        data object None : MenuMarkerState
+        data class Restorable(val message: Any, val source: String) : MenuMarkerState
     }
 }
