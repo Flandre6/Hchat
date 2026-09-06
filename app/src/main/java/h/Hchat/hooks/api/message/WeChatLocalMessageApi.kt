@@ -23,6 +23,8 @@ class WeChatLocalMessageApi(
     private val pendingCreateTime = ThreadLocal<TimedInsert?>()
     @Volatile
     private var createTimeHookInstalled = false
+    @Volatile
+    private var createTimeHookFailureLogged = false
 
     fun interface Logger {
         fun log(message: String)
@@ -49,18 +51,26 @@ class WeChatLocalMessageApi(
         val method = finder.localMessageCreateTimeMethod ?: return false
         synchronized(this) {
             if (createTimeHookInstalled) return true
-            HookRegistry.get().hook(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val pending = pendingCreateTime.get() ?: return
-                    val args = param.args ?: return
-                    val talker = args.getOrNull(0) as? String ?: return
-                    if (talker != pending.talker) return
-                    param.result = pending.createTime
+            return runCatching {
+                HookRegistry.get().hook(method, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val pending = pendingCreateTime.get() ?: return
+                        val args = param.args ?: return
+                        val talker = args.getOrNull(0) as? String ?: return
+                        if (talker != pending.talker) return
+                        param.result = pending.createTime
+                    }
+                })
+                createTimeHookInstalled = true
+                true
+            }.getOrElse {
+                if (!createTimeHookFailureLogged) {
+                    createTimeHookFailureLogged = true
+                    h.Hchat.utils.HLog.e("$TAG 时间 Hook 安装失败: ${method.toGenericString()}", it)
                 }
-            })
-            createTimeHookInstalled = true
+                false
+            }
         }
-        return true
     }
 
     fun insertSystemMessage(talker: String?, content: String?, createTime: Long = System.currentTimeMillis()): Long {
@@ -86,11 +96,11 @@ class WeChatLocalMessageApi(
             log("插入系统消息失败: 本地消息API未就绪")
             return 0L
         }
-        if (!useWechatCreateTime && !installCreateTimeHook()) {
-            log("插入系统消息失败: createTime hook 未就绪")
-            return 0L
-        }
         return runCatching {
+            if (!useWechatCreateTime && !installCreateTimeHook()) {
+                log("插入系统消息失败: createTime hook 未就绪")
+                return@runCatching 0L
+            }
             insertViaWechatSystemMessageMethod(
                 finder,
                 talker.orEmpty(),
@@ -102,10 +112,10 @@ class WeChatLocalMessageApi(
             val msg = newMessage(finder, talker.orEmpty())
                 ?: throw IllegalStateException("消息对象创建失败")
             fillSystemMessage(msg, talker.orEmpty(), content.orEmpty(), createTime, useWechatCreateTime)
-            val result = KavaReflector.invoke(finder.localMessageInsertMethod, null, msg)
+            val result = KavaReflector.invokeOrThrow(finder.localMessageInsertMethod, null, msg)
             (result as? Number)?.toLong() ?: 0L
         }.onFailure {
-            log("插入系统消息失败: ${it.message}")
+            h.Hchat.utils.HLog.e("$TAG 插入系统消息失败", it)
         }.getOrDefault(0L)
     }
 
@@ -118,14 +128,18 @@ class WeChatLocalMessageApi(
         val method = finder.localSystemMessageMethod ?: return null
         val owner = newSystemMessageOwner(finder, method)
             ?: throw IllegalStateException("系统消息API实例创建失败")
+        val previousCreateTime = pendingCreateTime.get()
         if (createTime != null) {
             pendingCreateTime.set(TimedInsert(talker, createTime))
+        } else {
+            pendingCreateTime.remove()
         }
         return try {
-            KavaReflector.invoke(method, owner, talker, content, "")
+            KavaReflector.invokeOrThrow(method, owner, talker, content, "")
             1L
         } finally {
-            if (createTime != null) pendingCreateTime.remove()
+            if (previousCreateTime == null) pendingCreateTime.remove()
+            else pendingCreateTime.set(previousCreateTime)
         }
     }
 

@@ -157,6 +157,8 @@ val refunded = WeChatApis.payment().transfers().refund(params)
 
 ## Message
 
+`WeChatApis.localMessages()` 提供本地系统提示插入：`insertSystemMessage(...)` 使用微信默认时间，`insertSystemMessageAt(...)` 请求指定时间并依赖时间 Hook，不可用时返回 `0`。调用方若允许提示采用默认时间，应在插入前检查 `installCreateTimeHook()` 的结果并选择接口，不应在一次可能已执行的插入后盲目重试。原生系统提示入口返回 `void`，API 的正值仅表示调用正常返回，不是已确认的数据库消息 ID；反射调用异常通过 `HLog.e` 保留原始异常并返回 `0`，不得吞掉异常后返回成功。指定时间状态按调用作用域保存、恢复，嵌套的普通插入不会继承外层指定时间。
+
 `WeChatApis.message().sender()`
 
 发送文本消息。底层使用本模块 DexKit 解析出的微信文本发送类和网络发包器，不使用 WA API。启用 `发送文本格式` 后，`sendText()`、`sendTextAsync()`、`sendTextWithAtList()`、`sendAt()`、`sendAtAll()` 以及 `sendRaw(..., type=1)` 都会先经过统一出站文本格式化器；因此模块和脚本插件只要复用这些公共文本接口，发送内容同样应用模板。公共接口没有输入框交互时，`${sendDuration}` 为 `0秒`；从发送按钮同步回调中调用公共接口时会沿用本次输入框计时上下文。非文本类型的 `sendRaw()` 不应用文本格式。

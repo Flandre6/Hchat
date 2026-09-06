@@ -33,6 +33,8 @@ class AntiRecallFeature : BaseFeature() {
     @Volatile private var messageStorageHookInstalled = false
     @Volatile private var msgProcessingHookInstalled = false
     @Volatile private var legacyCleanupHookInstalled = false
+    @Volatile private var noticeFallbackLogged = false
+    @Volatile private var noticeInsertedLogged = false
 
     override fun featureId(): String = ID
 
@@ -82,8 +84,11 @@ class AntiRecallFeature : BaseFeature() {
                             if (!isAntiRecallEnabled(context)) return
                             val handledKey = recallHandledKey(talker, svrId, recalledInfo)
                             if (!isHandled(handledKey)) {
-                                if (!handleRecall(context, talker, svrId, recalledInfo, recallTime)) return
-                                markHandled(handledKey)
+                                when (handleRecall(context, talker, svrId, recalledInfo, recallTime)) {
+                                    RecallHandling.ALLOW -> return
+                                    RecallHandling.BLOCKED -> markHandled(handledKey)
+                                    RecallHandling.NOTICE_PENDING -> Unit
+                                }
                             }
                             param.setResult(null)
                         }
@@ -153,25 +158,27 @@ class AntiRecallFeature : BaseFeature() {
         svrId: Long,
         payloadInfo: WeChatRecalledMessage?,
         recallTime: Long
-    ): Boolean {
+    ): RecallHandling {
         val recalledInfo = resolveRecalledInfo(talker, svrId, payloadInfo)
         val payloadSelfRecall = isSelfRecall(payloadInfo)
         val resolvedSelfRecall = isSelfRecall(recalledInfo)
         val selfRecall = payloadSelfRecall || resolvedSelfRecall
         if (selfRecall && !keepSelfRecallEnabled(context)) {
-            return false
+            return RecallHandling.ALLOW
         }
         if (selfRecall) markSelfRecallMessage(recalledInfo)
-        if (selfRecall) {
-            if (showNoticeEnabled(context)) {
-                insertLocalNotice(context, talker, svrId, recalledInfo, recallTime, true)
-            }
-            return true
+        if (!showNoticeEnabled(context)) return RecallHandling.BLOCKED
+        // Notice delivery must not let the original revoke operation run on failure.
+        val inserted = runCatching {
+            insertLocalNotice(context, talker, svrId, recalledInfo, recallTime, selfRecall)
+        }.getOrElse {
+            logError("防撤回提示插入异常，原消息继续保留", it)
+            false
         }
-        if (!showNoticeEnabled(context)) return true
-        insertLocalNotice(context, talker, svrId, recalledInfo, recallTime, selfRecall)
-        return true
+        return if (inserted) RecallHandling.BLOCKED else RecallHandling.NOTICE_PENDING
     }
+
+    private enum class RecallHandling { ALLOW, BLOCKED, NOTICE_PENDING }
 
     private fun installMessageCache() {
         trackSubscription(WeChatApis.messageEvents()?.subscribeMessage { event ->
@@ -537,34 +544,42 @@ class AntiRecallFeature : BaseFeature() {
         recalledInfo: WeChatRecalledMessage?,
         recallTime: Long,
         selfRecall: Boolean
-    ) {
+    ): Boolean {
         if (talker.isBlank() || svrId <= 0L) {
             h.Hchat.utils.HLog.e("$TAG 插入提示失败: talker/newmsgid为空 talker=$talker newmsgid=$svrId")
-            return
+            return false
         }
         val localMessages = WeChatApis.localMessages()
         if (localMessages == null) {
             h.Hchat.utils.HLog.e("$TAG 插入提示失败: LocalMessage API为空")
-            return
+            return false
         }
         localMessages.ensureReady()
-        val targetCreateTime = resolveRecalledCreateTime(svrId, recalledInfo)
+        val targetCreateTime = normalizeMillis(recalledInfo?.bestCreateTime() ?: 0L)
         val notice = if (selfRecall) {
             AntiRecallSettings.SELF_NOTICE_TEXT
         } else {
             noticeText(context, talker, recalledInfo, targetCreateTime, recallTime)
+        }.ifBlank { AntiRecallSettings.LEGACY_NOTICE_TEXT }
+        val useOriginalPosition = targetCreateTime > 0L && localMessages.installCreateTimeHook()
+        val result = if (useOriginalPosition) {
+            localMessages.insertSystemMessageAt(talker, notice, targetCreateTime + 1L)
+        } else {
+            if (!noticeFallbackLogged) {
+                noticeFallbackLogged = true
+                logInfo("撤回提示改用微信默认时间：原消息时间或定时插入 Hook 不可用")
+            }
+            localMessages.insertSystemMessage(talker, notice)
         }
-        if (targetCreateTime <= 0L) {
-            h.Hchat.utils.HLog.e(
-                "$TAG 插入提示失败: 未定位原消息时间 talker=$talker id=$svrId " +
-                    "origin=${recalledInfo?.originSvrId ?: 0L} new=${recalledInfo?.newMsgId ?: 0L}"
-            )
-            return
-        }
-        val result = localMessages.insertSystemMessageAt(talker, notice, targetCreateTime + 1L)
         if (result <= 0L) {
             h.Hchat.utils.HLog.e("$TAG 插入提示失败: talker=$talker newmsgid=$svrId")
+            return false
         }
+        if (!noticeInsertedLogged) {
+            noticeInsertedLogged = true
+            logInfo("撤回提示已提交本地系统消息接口")
+        }
+        return true
     }
 
     private fun resolveRecalledInfo(
@@ -586,29 +601,19 @@ class AntiRecallFeature : BaseFeature() {
         svrId: Long,
         payloadInfo: WeChatRecalledMessage?
     ): WeChatMessage? {
+        if (talker.isBlank()) return null
         for (id in recallLookupIds(svrId, payloadInfo)) {
-            messageCache[cacheKey(talker, id)]?.let { return it }
-            val message = WeChatApis.messageStore()?.getMessageById(id)
-                ?: WeChatApis.messageStore()?.getMessageBySvrId(talker, id)
-                ?: WeChatApis.messageStore()?.getMessageBySvrId(id)
+            fun matches(message: WeChatMessage): Boolean =
+                message.talker == talker && message.msgSvrId == id && !message.isRecalled()
+            messageCache[cacheKey(talker, id)]?.takeIf(::matches)?.let { return it }
+            val message = WeChatApis.messageStore()?.getMessageBySvrId(talker, id)?.takeIf(::matches)
+                ?: WeChatApis.messageStore()?.getMessageBySvrId(id)?.takeIf(::matches)
             if (message != null) {
                 rememberMessage(message)
                 return message
             }
         }
         return null
-    }
-
-    private fun resolveRecalledCreateTime(svrId: Long, info: WeChatRecalledMessage?): Long {
-        for (id in recallLookupIds(svrId, info)) {
-            val byLocalId = normalizeMillis(WeChatApis.messageStore()?.getMessageById(id)?.createTime ?: 0L)
-            if (byLocalId > 0L) return byLocalId
-        }
-        val newMsgCreateTime = normalizeMillis(WeChatApis.messageStore()?.getCreateTimeBySvrId(info?.newMsgId ?: 0L) ?: 0L)
-        if (newMsgCreateTime > 0L) return newMsgCreateTime
-        val createTime = normalizeMillis(info?.bestCreateTime() ?: 0L)
-        if (createTime > 0L) return createTime
-        return normalizeMillis(WeChatApis.messageStore()?.getCreateTimeBySvrId(svrId) ?: 0L)
     }
 
     private fun normalizeMillis(createTime: Long): Long {
