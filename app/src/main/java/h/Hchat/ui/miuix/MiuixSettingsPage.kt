@@ -214,6 +214,8 @@ import h.Hchat.hooks.items.autooriginal.AutoOriginalImageFeature
 import h.Hchat.hooks.items.autooriginal.AutoOriginalImageSettings
 import h.Hchat.hooks.items.autovieworiginal.AutoViewOriginalFeature
 import h.Hchat.hooks.items.autovieworiginal.AutoViewOriginalSettings
+import h.Hchat.hooks.items.transparentavatar.UploadTransparentAvatarFeature
+import h.Hchat.hooks.items.transparentavatar.UploadTransparentAvatarSettings
 import h.Hchat.hooks.items.atallnotify.AtAllNotificationBlockFeature
 import h.Hchat.hooks.items.atallnotify.AtAllNotificationBlockSettings
 import h.Hchat.hooks.items.automessageforward.AutoMessageForwardFeature
@@ -3096,6 +3098,7 @@ private fun practicalFeatureGroups(
                 HideChatAvatarFeature.ID,
                 RoundAvatarFeature.ID,
                 CustomFriendAvatarFeature.ID,
+                UploadTransparentAvatarFeature.ID,
                 CustomBottomBarFeature.ID,
                 FloatingBottomBarSettings.FEATURE_ID,
                 HomeSidePanelFeature.ID
@@ -3812,6 +3815,7 @@ private fun featureSubSearchTerms(featureId: String): List<String> {
         )
         QuickMarkReadFeature.ID -> listOf("快捷已读", "一键已读", "长按已读", "通知已读", "会话已读")
         AutoOriginalImageFeature.ID -> listOf("自动勾选原图", "原图发送", "聊天图片原图", "发送图片")
+        UploadTransparentAvatarFeature.ID -> listOf("上传透明头像", "透明头像", "PNG头像", "透明背景", "Alpha通道")
         AutoViewOriginalFeature.ID -> listOf(
             "自动查看原图", "查看原图", "自动查看原视频", "查看原视频", "聊天图片", "聊天视频", "原画质"
         )
@@ -4505,6 +4509,7 @@ private fun FeatureSettingsPage(
         TypingReportBlockFeature.ID -> TypingReportBlockMiuixPage(context, provider, onBack)
         PatBlockFeature.ID -> PatBlockMiuixPage(context, provider, onBack)
         AutoOriginalImageFeature.ID -> AutoOriginalImageMiuixPage(context, provider, onBack)
+        UploadTransparentAvatarFeature.ID -> UploadTransparentAvatarMiuixPage(context, provider, onBack)
         AutoViewOriginalFeature.ID -> AutoViewOriginalMiuixPage(context, provider, onBack)
         RemoveForwardLimitFeature.ID -> RemoveForwardLimitMiuixPage(context, provider, onBack)
         AtAllNotificationBlockFeature.ID -> AtAllNotificationBlockMiuixPage(context, provider, onBack)
@@ -5759,6 +5764,46 @@ private fun AutoOriginalImageMiuixPage(
                         "自动勾选原图",
                         "进入聊天图片发送界面时自动选择原图",
                         AutoOriginalImageSettings.DEFAULT_ENABLE
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UploadTransparentAvatarMiuixPage(
+    context: Context,
+    provider: FeatureSettingsProvider,
+    onBack: () -> Unit
+) {
+    val sp = remember { UploadTransparentAvatarSettings.preferences(context) }
+    val listState = rememberLazyListState()
+    val scrollBehavior = MiuixScrollBehavior()
+
+    PageScaffold(
+        title = provider.title(),
+        largeTitle = provider.title(),
+        scrollBehavior = scrollBehavior,
+        bottomBar = { BottomActionBar("返回", onBack) }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
+            state = listState,
+            contentPadding = PaddingValues(
+                top = padding.calculateTopPadding() + 8.dp,
+                bottom = padding.calculateBottomPadding() + 84.dp
+            )
+        ) {
+            item { SmallTitle(text = "个人头像") }
+            item {
+                SettingsCard {
+                    SwitchRow(
+                        sp,
+                        UploadTransparentAvatarSettings.KEY_ENABLE,
+                        "上传透明头像",
+                        "上传头像时使用 PNG 格式保留透明背景",
+                        UploadTransparentAvatarSettings.DEFAULT_ENABLE
                     )
                 }
             }
