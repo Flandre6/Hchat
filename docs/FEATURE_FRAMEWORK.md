@@ -1955,4 +1955,4 @@ LSPosed 日志确认定位结果。
 
 Hchat 的单消息 `转发[H]` 在生成快照前读取原生消息的 `msgSource`；命中 `sec_msg_node` 时直接终止并提示
 “安全消息不可转发”。公共选中消息快照也拒绝带该节点的消息，避免多选群发或定时发送通过模块通道绕过
-安全消息限制。微信原生图片、视频、表情和 AppMsg 转发会创建新消息对象，不能依赖新对象继承源消息的安全节点；模块因此在 Android Activity 启动边界仅拦截目标为稳定类 `com.tencent.mm.ui.transmit.MsgRetransmitUI` 的 Intent，按 `Retr_Msg_Id` 回查源消息 `msgSource`，命中安全节点就取消启动并提示“安全消息不可转发”。`Retr_Msg_content` 自身带安全节点时也直接拦截。该守卫不依赖各媒体分支的混淆类名，不影响普通消息和其它 Activity；`8.0.49` 至 `8.0.76` 已确认这些原生转发类型携带 `Retr_Msg_Id` 进入该页面，`8.0.77` 仍需真机确认。
+安全消息转发。微信原生图片、视频、表情和 AppMsg 转发会创建新消息对象，不能依赖新对象继承源消息的安全节点；模块不拦截 `MsgRetransmitUI`，也不取消 Activity 或提示“不可转发”。在已确认的 `com.tencent.mm.ui.transmit.MsgRetransmitUI` 发送分派入口建立短生命周期的安全原生转发上下文，并在新消息 `msgSource` 写入阶段补入 `sec_msg_node`；AppMsg 的发送参数也在同一上下文中补入标记。这样发送方仍按微信原生流程看到转发成功，接收方收到的转发消息继续按安全消息语义处理。`8.0.77` 的静态 APK 已确认 `MsgRetransmitUI#onCreate` 读取 `Retr_Msg_Id`、`Retr_Msg_Type`、`Retr_Msg_content`，发送分派方法为单字符串参数的 `E6`；未完成真机验证前不宣称所有媒体分支均已覆盖。
