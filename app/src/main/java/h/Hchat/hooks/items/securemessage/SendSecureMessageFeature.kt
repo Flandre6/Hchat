@@ -13,10 +13,12 @@ import h.Hchat.utils.KavaReflector
 import org.luckypray.dexkit.query.FindMethod
 import org.luckypray.dexkit.query.matchers.MethodMatcher
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 
 /** Injects the WeChat secure-message marker before outgoing supported messages are stored. */
 class SendSecureMessageFeature : BaseFeature() {
     @Volatile private var installed = false
+    @Volatile private var mergeInstalled = false
     private var prefs: android.content.SharedPreferences? = null
     private lateinit var methodPrefs: android.content.SharedPreferences
     @Volatile private var markerLogged = false
@@ -44,7 +46,7 @@ class SendSecureMessageFeature : BaseFeature() {
 
     @Synchronized
     private fun installHook(context: FeatureContext): Boolean {
-        if (installed) return true
+        if (installed && mergeInstalled) return true
         val runtimeKey = methodCacheKey(context)
         if (runtimeKey.isBlank()) {
             logError("安全消息安装跳过：微信运行时版本信息未就绪", null)
@@ -60,7 +62,7 @@ class SendSecureMessageFeature : BaseFeature() {
                 logError("安全消息入库方法未定位到，微信版本可能不匹配", null)
                 return false
             }
-        return runCatching {
+        val insertReady = if (installed) true else runCatching {
             HookRegistry.get().hook(insert, object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     if (!enabled()) return
@@ -72,7 +74,7 @@ class SendSecureMessageFeature : BaseFeature() {
                         }
                         return
                     }
-                    if (!isOutgoingText(msg)) return
+                    if (!isSupportedOutgoingMessage(msg)) return
                     addSecureMarker(msg)
                 }
             })
@@ -83,28 +85,63 @@ class SendSecureMessageFeature : BaseFeature() {
             logError("安全消息入库Hook安装失败", it)
             false
         }
+        val mergeReady = if (mergeInstalled) true else installSourceMergeHooks(insert)
+        return insertReady && mergeReady
+    }
+
+    /**
+     * Media senders assign msgSource before the final local insert. Hook the setter layer
+     * as well so the marker reaches the actual image/video/emoji/AppMsg send request.
+     * Candidates are derived from the already verified insert argument class; no
+     * obfuscated method name is guessed.
+     */
+    private fun installSourceMergeHooks(insert: Method): Boolean {
+        val messageClass = insert.parameterTypes.firstOrNull {
+            !it.isPrimitive && it != String::class.java && it.name.startsWith(MESSAGE_PACKAGE)
+        } ?: return false
+        val candidates = generateSequence<Class<*>>(messageClass) { current -> current.superclass }
+            .takeWhile { it != Any::class.java }
+            .flatMap { KavaReflector.declaredMethods(it).asSequence() }
+            .filter(::isStringSetter)
+            .distinctBy { it.toGenericString() }
+            .toList()
+        if (candidates.isEmpty()) {
+            logError("安全消息 msgSource 合并入口未找到: ${messageClass.name}", null)
+            return false
+        }
+        var count = 0
+        candidates.forEach { method ->
+            runCatching {
+                HookRegistry.get().hook(method, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        if (!enabled()) return
+                        val source = param.args?.getOrNull(0) as? String ?: return
+                        if (!looksLikeMsgSource(source)) return
+                        val message = param.thisObject ?: return
+                        if (!isSupportedOutgoingMessage(message)) return
+                        param.args[0] = SecureMessageSource.addMarker(source)
+                    }
+                })
+                count++
+            }.onFailure {
+                logError("安全消息 msgSource 候选 Hook 安装失败: ${method.toGenericString()}", it)
+            }
+        }
+        mergeInstalled = count > 0
+        if (mergeInstalled) logInfo("安全消息 msgSource 合并 Hook 已安装: $count 个候选")
+        return mergeInstalled
     }
 
     private fun enabled(): Boolean = prefs?.getBoolean(SecureMessageSettings.KEY_ENABLE, SecureMessageSettings.DEFAULT_ENABLE) == true
 
     private fun isMessageLike(value: Any): Boolean =
-        KavaReflector.readField(value, "field_type") != null ||
-            KavaReflector.readField(value, "field_content") != null ||
-            KavaReflector.readField(value, "field_msgSource") != null
+        readNumber(value, "field_type", "type", "getType", "getMsgType") != null ||
+            SOURCE_FIELDS.any { KavaReflector.readField(value, it) != null }
 
     private fun addSecureMarker(message: Any) {
         val current = readMessageSource(message)
-        if (current.contains("<sec_msg_node", ignoreCase = true)) return
-        val updated = when {
-            current.contains("</msgsource>", ignoreCase = true) ->
-                current.replaceFirst(Regex("</msgsource>", RegexOption.IGNORE_CASE), SecureMessageSettings.SEC_XML + "</msgsource>")
-            current.contains("<msgsource", ignoreCase = true) ->
-                current.replaceFirst(
-                    Regex("(<msgsource\\b[^>]*>)", RegexOption.IGNORE_CASE),
-                    "${'$'}1${SecureMessageSettings.SEC_XML}"
-                )
-            else -> "<msgsource>${SecureMessageSettings.SEC_XML}</msgsource>"
-        }
+        if (SecureMessageSource.containsMarker(current)) return
+        val updated = SecureMessageSource.addMarker(current)
         if (!setMessageSource(message, updated)) {
             if (!markerFailureLogged) {
                 markerFailureLogged = true
@@ -133,33 +170,18 @@ class SendSecureMessageFeature : BaseFeature() {
         }
     }
 
-    private fun isOutgoingText(message: Any): Boolean {
+    private fun isSupportedOutgoingMessage(message: Any): Boolean {
         val send = readNumber(message, "field_isSend", "isSend", "getIsSend", "getSend")
         if (send?.toInt() != 1) return false
         val type = readNumber(message, "field_type", "type", "getType", "getMsgType")
         if (type == null) return true
-        return when {
-            WeChatMessageTypes.isText(type.toInt()) -> true
-            WeChatMessageTypes.isEmoji(type.toInt()) -> true
-            WeChatMessageTypes.isApp(type.toInt()) -> isQuoteReply(message)
-            else -> false
-        }
-    }
-
-    /**
-     * Quote replies are stored as an AppMsg (outer type 49) whose appmsg type is 57.
-     * Other AppMsg cards must not inherit the secure-message marker implicitly.
-     */
-    private fun isQuoteReply(message: Any): Boolean {
-        val content = readContent(message)
-        return QUOTE_APPMSG_TYPE.containsMatchIn(content)
-    }
-
-    private fun readContent(message: Any): String {
-        return (KavaReflector.readField(message, "field_content") as? String)
-            ?: (KavaReflector.readField(message, "content") as? String)
-            ?: (KavaReflector.invokeMethod(message, "getContent") as? String)
-            .orEmpty()
+        val normalized = WeChatMessageTypes.normalize(type.toInt())
+        return normalized == WeChatMessageTypes.TEXT ||
+            normalized == WeChatMessageTypes.IMAGE ||
+            normalized == WeChatMessageTypes.VIDEO ||
+            normalized == VIDEO_COMPAT ||
+            normalized == WeChatMessageTypes.EMOJI ||
+            normalized == WeChatMessageTypes.APP
     }
 
     private fun readNumber(receiver: Any, vararg names: String): Number? {
@@ -174,6 +196,19 @@ class SendSecureMessageFeature : BaseFeature() {
         if (method.parameterCount !in 1..2) return false
         if (method.returnType != Void.TYPE && method.returnType != Long::class.javaPrimitiveType) return false
         return method.parameterTypes.any { !it.isPrimitive }
+    }
+
+    private fun isStringSetter(method: Method): Boolean {
+        return !Modifier.isStatic(method.modifiers) &&
+            !Modifier.isAbstract(method.modifiers) &&
+            method.returnType == Void.TYPE &&
+            method.parameterTypes.contentEquals(arrayOf(String::class.java))
+    }
+
+    private fun looksLikeMsgSource(value: String): Boolean {
+        val trimmed = value.trimStart()
+        return trimmed.startsWith("<msgsource", ignoreCase = true) &&
+            trimmed.contains("</msgsource>", ignoreCase = true)
     }
 
     private fun cachedOrLocate(context: FeatureContext, runtimeKey: String, name: String, anchor: String, predicate: (Method) -> Boolean): Method? {
@@ -220,6 +255,7 @@ class SendSecureMessageFeature : BaseFeature() {
         val SOURCE_SETTERS = arrayOf("setMsgSource", "setMsgsource", "setSource")
         // 8.0.77 (e9) stores MsgInfo.msgSource in the obfuscated G field.
         val SOURCE_FIELDS = arrayOf("field_msgSource", "msgSource", "G", "g")
-        val QUOTE_APPMSG_TYPE = Regex("<type>\\s*57\\s*</type>", RegexOption.IGNORE_CASE)
+        const val VIDEO_COMPAT = 62
+        const val MESSAGE_PACKAGE = "com.tencent.mm.storage."
     }
 }
