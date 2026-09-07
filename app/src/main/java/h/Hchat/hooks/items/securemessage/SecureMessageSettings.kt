@@ -12,4 +12,5 @@ object SecureMessageSettings {
     const val CACHE_INSERT = "insert_message"
     const val CACHE_MERGE = "merge_msg_source"
     const val CACHE_CHECK = "secure_message_check"
+    const val CACHE_FORWARD = "native_forward_dispatch"
 }
