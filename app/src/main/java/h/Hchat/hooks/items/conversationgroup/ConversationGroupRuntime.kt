@@ -1308,6 +1308,9 @@ object ConversationGroupRuntime {
         val database = WeChatApis.database() ?: return
         var groups = ConversationGroupStore.load(context)
         val enabled = ConversationGroupStore.isEnabled(context)
+        // Disabling the feature must stop synchronization without deleting the
+        // persisted virtual rows; re-enabling can resume from the saved groups.
+        if (!enabled) return
         val automaticResolution = if (enabled) {
             ConversationGroupAutomaticResolver.resolveForSync(context, groups)
         } else null

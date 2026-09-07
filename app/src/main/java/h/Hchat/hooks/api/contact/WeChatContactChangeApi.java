@@ -103,6 +103,7 @@ public final class WeChatContactChangeApi {
                 && !"img_flag".equalsIgnoreCase(change.table))) {
             return;
         }
+        if (listeners.isEmpty()) return;
         WeChatContact contact = resolveContact(change);
         ContactChange event = new ContactChange(change, contact);
         for (Listener listener : listeners) {

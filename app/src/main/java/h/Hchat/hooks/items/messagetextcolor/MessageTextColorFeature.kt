@@ -29,6 +29,7 @@ import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.ref.WeakReference
 import java.util.Collections
+import java.util.IdentityHashMap
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
 
@@ -887,19 +888,32 @@ private class MessageTextColorRenderer(
 
     private fun adapterItem(adapter: Any, position: Int): Any? {
         if (position < 0) return null
-        itemMethodCache[adapter.javaClass]?.let { return KavaReflector.invoke(it, adapter, position) }
-        var current: Class<*>? = adapter.javaClass
-        while (current != null && current != Any::class.java) {
-            val method = KavaReflector.declaredMethods(current).firstOrNull {
-                it.parameterTypes.size == 1 &&
-                    (it.parameterTypes[0] == Integer.TYPE || it.parameterTypes[0] == Int::class.java) &&
-                    (it.name == "J0" || it.name == "getItem" || it.name == "get")
+        itemMethodCache[adapter.javaClass]?.let { method ->
+            KavaReflector.invoke(method, adapter, position)
+                ?.takeIf { item -> resolveNativeMessage(item) != null }
+                ?.let { return it }
+            itemMethodCache.remove(adapter.javaClass, method)
+        }
+        for (methodName in ITEM_METHOD_NAMES) {
+            var current: Class<*>? = adapter.javaClass
+            while (current != null && current != Any::class.java) {
+                val methods = KavaReflector.declaredMethods(current)
+                    .filter {
+                        it.parameterTypes.size == 1 &&
+                            (it.parameterTypes[0] == Integer.TYPE || it.parameterTypes[0] == Int::class.java) &&
+                            it.returnType != Void.TYPE &&
+                            it.name == methodName
+                    }
+                for (method in methods) {
+                    KavaReflector.invoke(method, adapter, position)
+                        ?.takeIf { item -> resolveNativeMessage(item) != null }
+                        ?.let { item ->
+                            itemMethodCache[adapter.javaClass] = method
+                            return item
+                        }
+                }
+                current = current.superclass
             }
-            if (method != null) {
-                itemMethodCache[adapter.javaClass] = method
-                KavaReflector.invoke(method, adapter, position)?.let { return it }
-            }
-            current = current.superclass
         }
         return adapterListItem(adapter, position)
     }
@@ -907,24 +921,38 @@ private class MessageTextColorRenderer(
     private fun adapterListItem(adapter: Any, position: Int): Any? {
         itemListFieldCache[adapter.javaClass]?.let { field ->
             listItem(KavaReflector.readField(field, adapter), position)?.let { return it }
+            itemListFieldCache.remove(adapter.javaClass, field)
         }
         var current: Class<*>? = adapter.javaClass
         while (current != null && current != Any::class.java) {
             val field = KavaReflector.declaredFields(current).firstOrNull {
-                it.name == "K" || it.name == "items" || it.name == "data" || it.name == "list"
+                it.name == "K" || it.name == "I" || it.name == "items" || it.name == "data" || it.name == "list"
             }
             if (field != null) {
-                itemListFieldCache[adapter.javaClass] = field
-                return listItem(KavaReflector.readField(field, adapter), position)
+                listItem(KavaReflector.readField(field, adapter), position)?.let {
+                    itemListFieldCache[adapter.javaClass] = field
+                    return it
+                }
             }
             current = current.superclass
         }
-        return findNestedListItem(adapter, position, Collections.newSetFromMap(WeakHashMap<Any, Boolean>()), 0)
+        return findNestedListItem(adapter, position, Collections.newSetFromMap(IdentityHashMap<Any, Boolean>()), 0)
     }
 
     private fun listItem(list: Any?, position: Int): Any? {
         if (list == null || position < 0) return null
         if (list is List<*> && position < list.size) return list[position]
+        var current: Class<*>? = list.javaClass
+        while (current != null && current != Any::class.java) {
+            val field = KavaReflector.declaredFields(current).firstOrNull {
+                java.util.List::class.java.isAssignableFrom(it.type) &&
+                    it.name in arrayOf("o", "items", "data", "list")
+            }
+            if (field != null) {
+                listItem(KavaReflector.readField(field, list), position)?.let { return it }
+            }
+            current = current.superclass
+        }
         return KavaReflector.invoke(KavaReflector.findMethod(list.javaClass, "get", Integer.TYPE), list, position)
             ?: KavaReflector.invoke(KavaReflector.findMethod(list.javaClass, "get", Int::class.java), list, position)
     }
@@ -955,7 +983,7 @@ private class MessageTextColorRenderer(
         }
         val resolved = resolveNativeMessage(
             source,
-            Collections.newSetFromMap(WeakHashMap<Any, Boolean>()),
+            Collections.newSetFromMap(IdentityHashMap<Any, Boolean>()),
             0
         )
         if (resolved != null) {
@@ -1110,11 +1138,12 @@ private class MessageTextColorRenderer(
 
     private companion object {
         const val TAG = "[Hchat:MessageTextColor]"
+        val ITEM_METHOD_NAMES = arrayOf("getItem", "K0")
         const val HOST_PACKAGE = "com.tencent.mm"
         const val MESSAGE_BODY_VIEW_RESOURCE = "bkl"
         const val VOIP_TEXT_VIEW_RESOURCE = "bs3"
         const val CHAT_RECORD_APP_MSG_TYPE = 19
-        const val CACHE_SCHEMA = "message_text_color_v3"
+        const val CACHE_SCHEMA = "message_text_color_v4"
         const val CACHE_ADAPTER_BIND = "adapter_bind"
         const val MAX_SHADER_RETRIES = 2
         val CHAT_RECORD_TEXT_VIEW_RESOURCES = listOf("bjx", "bj2")
