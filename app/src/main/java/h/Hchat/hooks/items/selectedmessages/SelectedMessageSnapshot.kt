@@ -5,6 +5,7 @@ import h.Hchat.hooks.api.media.VoiceMessageDurationResolver
 import h.Hchat.hooks.api.message.WeChatRetransmitPayload
 import h.Hchat.hooks.api.message.WeChatRetransmitPayloadFactory
 import h.Hchat.hooks.api.model.WeChatMessage
+import h.Hchat.hooks.items.securemessage.SecureMessageSource
 import h.Hchat.utils.KavaReflector
 import org.json.JSONObject
 import java.io.File
@@ -95,6 +96,7 @@ data class SelectedMessageSnapshot(
             if (msgId <= 0L) return null
             val stored = runCatching { WeChatApis.messageStore()?.getMessageById(msgId) }.getOrNull()
             val message = stored ?: messageFromNative(nativeMessage, msgId) ?: return null
+            if (!momentsOnly && SecureMessageSource.containsMarker(message.getMsgSource())) return null
             if (!momentsOnly && (message.isSystem() || message.isRecalled() || message.isVoip() ||
                 message.isRedPacket() || message.isTransfer()
             )) return null
@@ -203,7 +205,7 @@ data class SelectedMessageSnapshot(
                 "",
                 "",
                 0,
-                readString(nativeMessage, "getMsgSource", "field_msgSource", "msgSource"),
+                readMessageSource(nativeMessage),
                 ""
             )
         }
@@ -230,6 +232,14 @@ data class SelectedMessageSnapshot(
             return readValue(source, getter, field, fallback)?.toString().orEmpty()
         }
 
+        private fun readMessageSource(source: Any): String {
+            (KavaReflector.invokeMethod(source, "getMsgSource") as? String)?.let { return it }
+            for (field in SOURCE_FIELDS) {
+                (KavaReflector.readField(source, field) as? String)?.let { return it }
+            }
+            return ""
+        }
+
         private fun readInt(source: Any, getter: String, field: String, fallback: String): Int {
             return (readValue(source, getter, field, fallback) as? Number)?.toInt() ?: 0
         }
@@ -245,5 +255,6 @@ data class SelectedMessageSnapshot(
         }
 
         private const val DEFAULT_VOICE_DURATION_MS = 1000
+        private val SOURCE_FIELDS = arrayOf("field_msgSource", "msgSource", "G", "g")
     }
 }

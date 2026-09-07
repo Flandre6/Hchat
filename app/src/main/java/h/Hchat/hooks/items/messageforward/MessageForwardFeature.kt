@@ -28,6 +28,7 @@ import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.core.HookRegistry
 import h.Hchat.hooks.items.grouplabel.GroupChatLabelStore
+import h.Hchat.hooks.items.securemessage.SecureMessageSource
 import h.Hchat.hooks.items.selectedmessages.SelectedMessageContactRepository
 import h.Hchat.hooks.items.selectedmessages.SelectedMessageSendHandle
 import h.Hchat.hooks.items.selectedmessages.SelectedMessageSnapshot
@@ -238,6 +239,11 @@ private class MessageForwardHooker(
             toast(activity, "消息不可转发")
             return
         }
+        if (isSecureMessage(binding.nativeMessage)) {
+            param.result = null
+            toast(activity, "安全消息不可转发")
+            return
+        }
         val snapshot = SelectedMessageSnapshot.fromNative(binding.nativeMessage)
             ?: SelectedMessageSnapshot.fromNativeForMoments(binding.nativeMessage)
         if (snapshot == null) {
@@ -249,6 +255,14 @@ private class MessageForwardHooker(
                 showActions(activity, snapshot)
             }
         }
+    }
+
+    private fun isSecureMessage(message: Any): Boolean {
+        val source = SOURCE_FIELDS.asSequence()
+            .mapNotNull { field -> KavaReflector.readField(message, field) as? String }
+            .firstOrNull { it.isNotBlank() }
+            ?: (KavaReflector.invokeMethod(message, "getMsgSource") as? String).orEmpty()
+        return SecureMessageSource.containsMarker(source)
     }
 
     private fun addMultiMomentsMenu(param: XC_MethodHook.MethodHookParam) {
@@ -1572,6 +1586,7 @@ private class MessageForwardHooker(
         private const val SNS_FORWARD_MENU_TITLE = "转发[H]"
         private const val SNS_UPLOAD_ACTIVITY = "com.tencent.mm.plugin.sns.ui.SnsUploadUI"
         private const val MAX_MOMENTS_IMAGES = 9
+        private val SOURCE_FIELDS = arrayOf("field_msgSource", "msgSource", "G", "g")
         private val MOMENTS_VIDEO_TYPES = setOf(WeChatMessageTypes.VIDEO, 62)
     }
 }

@@ -3788,7 +3788,7 @@ private fun featureSubSearchTerms(featureId: String): List<String> {
         MultiRecallFeature.ID -> listOf("多选撤回", "批量撤回", "多选消息", "分享菜单", "撤回自己消息")
         MessageForwardFeature.ID -> listOf("转发", "转发[H]", "朋友圈", "好友", "分享", "群发助手", "好友标签", "朋友圈转发", "个人主页朋友圈")
         SelectedMessagesFeature.ID -> listOf("群发助手", "群发助手[H]", "定时转发[H]", "多选消息", "定时转发", "模块群发", "微信原生群发助手", "群发助手间隔延迟", "群发间隔延迟")
-        SecureMessageSettings.SEND_ID -> listOf("安全消息", "sec_msg_node", "安全标记", "发送文本消息")
+        SecureMessageSettings.SEND_ID -> listOf("安全消息", "sec_msg_node", "安全标记", "文字", "链接", "卡片", "图片", "视频", "表情包")
         SecureMessageSettings.ANTI_ID -> listOf("反安全消息", "sec_msg_node", "恢复长按菜单", "安全消息检查")
         AutoReplyFeature.ID -> listOf(
             "自动回复规则", "任意消息", "关键词", "正则", "艾特我", "@我", "艾特全体", "@所有人", "回复步骤", "延迟回复",
