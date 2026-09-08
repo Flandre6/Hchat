@@ -24,12 +24,16 @@ class SendSecureMessageFeature : BaseFeature() {
     @Volatile private var forwardContextInstalled = false
     @Volatile private var appMsgForwardInstalled = false
     private val pendingForwardTargets = ConcurrentHashMap<String, Long>()
+    private val forwardFallbackLock = Any()
+    private var forwardFallbackExpiry = 0L
+    private var forwardFallbackBudget = 0
     private var prefs: android.content.SharedPreferences? = null
     private lateinit var methodPrefs: android.content.SharedPreferences
     @Volatile private var markerLogged = false
     @Volatile private var markerFailureLogged = false
     @Volatile private var hookMissLogged = false
     @Volatile private var sourceMergeLogged = false
+    @Volatile private var forwardSourceMissLogged = false
 
     override fun featureId(): String = SecureMessageSettings.SEND_ID
     override fun name(): String = "安全消息"
@@ -81,7 +85,9 @@ class SendSecureMessageFeature : BaseFeature() {
                         return
                     }
                     if (!isSupportedOutgoingMessage(msg)) return
+                    val nativeForward = isPendingNativeForward(msg)
                     addSecureMarker(msg)
+                    if (nativeForward) consumeForwardContext(readString(msg, "field_talker", "talker", "getTalker", "field_username", "username", "getUsername"))
                 }
             })
             installed = true
@@ -131,7 +137,7 @@ class SendSecureMessageFeature : BaseFeature() {
                         if (!looksLikeMsgSource(source) && !nativeForward) return
                         param.args[0] = SecureMessageSource.addMarker(source)
                         if (nativeForward) {
-                            clearPendingTarget(readString(message, "field_talker", "talker", "getTalker", "field_username", "username", "getUsername"))
+                            consumeForwardContext(readString(message, "field_talker", "talker", "getTalker", "field_username", "username", "getUsername"))
                         }
                         if (!sourceMergeLogged) {
                             sourceMergeLogged = true
@@ -163,24 +169,59 @@ class SendSecureMessageFeature : BaseFeature() {
             logError("安全原生转发发送入口未定位到: $MSG_RETRANSMIT_UI", null)
             return false
         }
+        var dispatchHookInstalled = false
         runCatching {
             KavaReflector.accessible(method)
             DexMethodCache.save(methodPrefs, runtimeKey, SecureMessageSettings.CACHE_FORWARD, method)
             HookRegistry.get().hook(method, object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (!enabled() || !isSecureRetransmitInstance(param.thisObject)) return
+                    if (!enabled()) return
+                    if (!isSecureRetransmitInstance(param.thisObject)) {
+                        logForwardSourceMiss(param.thisObject, "E6")
+                        return
+                    }
                     val targets = retransmitTargets(param.thisObject)
                     val argumentTarget = param.args?.firstOrNull { it is String } as? String
                     if (!argumentTarget.isNullOrBlank()) targets += argumentTarget
-                    val expiry = System.currentTimeMillis() + FORWARD_CONTEXT_TTL_MS
-                    targets.filter { it.isNotBlank() }.forEach { pendingForwardTargets[it] = expiry }
+                    armNativeForward(targets, "E6")
                     logInfo("已识别安全消息原生转发目标: ${targets.joinToString(",").ifBlank { "unknown" }}")
                 }
             })
-            forwardContextInstalled = true
+            dispatchHookInstalled = true
             logInfo("安全原生转发上下文 Hook 已安装: ${method.toGenericString()}")
         }.onFailure { logError("安全原生转发上下文 Hook 安装失败", it) }
+        val lifecycleHookInstalled = installRetransmitCreateHook(clazz)
+        forwardContextInstalled = dispatchHookInstalled || lifecycleHookInstalled
         return forwardContextInstalled
+    }
+
+    /** Arm the forward context before media-specific asynchronous tasks start. */
+    private fun installRetransmitCreateHook(clazz: Class<*>): Boolean {
+        val method = KavaReflector.declaredMethods(clazz).firstOrNull { candidate ->
+            candidate.name == "onCreate" &&
+                candidate.parameterTypes.size == 1 &&
+                candidate.parameterTypes[0].name == "android.os.Bundle"
+        } ?: return false
+        return runCatching {
+            HookRegistry.get().hook(method, object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    if (!enabled()) return
+                    if (!isSecureRetransmitInstance(param.thisObject)) {
+                        logForwardSourceMiss(param.thisObject, "onCreate")
+                        return
+                    }
+                    val targets = retransmitTargets(param.thisObject)
+                    readRetransmitIntentTargets(param.thisObject).forEach { targets += it }
+                    armNativeForward(targets, "onCreate")
+                    logInfo("已在原生转发页创建阶段识别安全消息: targets=${targets.joinToString(",").ifBlank { "unknown" }}")
+                }
+            })
+            logInfo("安全原生转发页创建 Hook 已安装: ${method.toGenericString()}")
+            true
+        }.getOrElse {
+            logError("安全原生转发页创建 Hook 安装失败: ${method.toGenericString()}", it)
+            false
+        }
     }
 
     private fun installAppMsgForwardHook(context: FeatureContext): Boolean {
@@ -191,10 +232,10 @@ class SendSecureMessageFeature : BaseFeature() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     if (!enabled() || param.args == null || param.args.size <= 8) return
                     val target = param.args.getOrNull(3) as? String ?: return
-                    if (!isPendingTarget(target)) return
+                    if (!isPendingTarget(target) && !isFallbackForwardActive()) return
                     val source = param.args.getOrNull(8) as? String ?: ""
                     param.args[8] = SecureMessageSource.addMarker(source)
-                    clearPendingTarget(target)
+                    consumeForwardContext(target)
                     logInfo("安全原生转发 AppMsg 已补入安全标记: target=$target")
                 }
             })
@@ -223,26 +264,110 @@ class SendSecureMessageFeature : BaseFeature() {
 
     private fun isSecureRetransmitInstance(instance: Any?): Boolean {
         if (instance == null) return false
+        if (isSecureRetransmitIntent(instance)) return true
         val content = listOf("i", "field_content", "msgContent", "getContent")
             .asSequence().mapNotNull { KavaReflector.readField(instance, it) as? String }.firstOrNull()
         if (SecureMessageSource.containsMarker(content)) return true
-        val msgId = readNumber(instance, "f", "field_msgId", "msgId", "getMsgId")?.toLong() ?: return false
-        if (msgId <= 0L) return false
-        val source = runCatching { WeChatApis.messageStore()?.getMessageById(msgId)?.getMsgSource() }.getOrNull()
-            ?: runCatching { WeChatApis.database()?.nativeMessageById(msgId)?.let(::readMessageSource) }.getOrNull()
+        val msgId = readNumber(instance, "f", "field_msgId", "msgId", "getMsgId")?.toLong() ?: 0L
+        if (msgId > 0L) {
+            val source = runCatching { WeChatApis.messageStore()?.getMessageById(msgId)?.getMsgSource() }.getOrNull()
+                ?: runCatching { WeChatApis.database()?.nativeMessageById(msgId)?.let(::readMessageSource) }.getOrNull()
+            if (SecureMessageSource.containsMarker(source)) return true
+        }
+
+        // Keep a bounded fallback for builds where MsgRetransmitUI copied the
+        // source into a renamed string field before the dispatch method.
+        return KavaReflector.declaredFields(instance.javaClass)
+            .asSequence()
+            .filter { it.type == String::class.java }
+            .mapNotNull { KavaReflector.readField(it, instance) as? String }
+            .any { SecureMessageSource.containsMarker(it) }
+    }
+
+    private fun isSecureRetransmitIntent(instance: Any): Boolean {
+        val intent = KavaReflector.invokeMethod(instance, "getIntent") ?: return false
+        val content = KavaReflector.invokeMethod(intent, "getStringExtra", "Retr_Msg_content") as? String
+        if (SecureMessageSource.containsMarker(content)) return true
+        val bytes = KavaReflector.invokeMethod(intent, "getByteArrayExtra", "Retr_Msg_content_bytes") as? ByteArray
+        if (bytes != null && SecureMessageSource.containsMarker(String(bytes, Charsets.UTF_8))) return true
+        val id = (KavaReflector.invokeMethod(intent, "getLongExtra", "Retr_Msg_Id", 0L) as? Number)?.toLong() ?: 0L
+        if (id <= 0L) return false
+        val source = runCatching { WeChatApis.messageStore()?.getMessageById(id)?.getMsgSource() }.getOrNull()
+            ?: runCatching { WeChatApis.database()?.nativeMessageById(id)?.let(::readMessageSource) }.getOrNull()
         return SecureMessageSource.containsMarker(source)
+    }
+
+    private fun logForwardSourceMiss(instance: Any?, stage: String) {
+        if (forwardSourceMissLogged) return
+        forwardSourceMissLogged = true
+        val className = instance?.javaClass?.name ?: "null"
+        val id = instance?.let { readNumber(it, "f", "field_msgId", "msgId", "getMsgId") } ?: "unknown"
+        logInfo("安全原生转发源消息未识别: stage=$stage class=$className id=$id")
     }
 
     private fun isPendingNativeForward(message: Any): Boolean {
         val target = readString(message, "field_talker", "talker", "getTalker", "field_username", "username", "getUsername")
-        return isPendingTarget(target)
+        return isPendingTarget(target) || (target.isNullOrBlank() && isFallbackForwardActive())
     }
 
     private fun retransmitTargets(instance: Any?): MutableSet<String> {
         val result = linkedSetOf<String>()
         val users = instance?.let { KavaReflector.readField(it, "h") }
-        if (users is Iterable<*>) users.forEach { value -> if (value is String && value.isNotBlank()) result += value }
+        collectForwardTargets(users, result)
         return result
+    }
+
+    private fun readRetransmitIntentTargets(instance: Any?): Set<String> {
+        val intent = KavaReflector.invokeMethod(instance, "getIntent") ?: return emptySet()
+        val result = linkedSetOf<String>()
+        RETRANSMIT_TARGET_EXTRAS.forEach { key ->
+            collectForwardTargets(KavaReflector.invokeMethod(intent, "getStringArrayListExtra", key), result)
+            collectForwardTargets(KavaReflector.invokeMethod(intent, "getStringExtra", key), result)
+            collectForwardTargets(KavaReflector.invokeMethod(intent, "getSerializableExtra", key), result)
+        }
+        return result
+    }
+
+    private fun collectForwardTargets(value: Any?, result: MutableSet<String>) {
+        when (value) {
+            is String -> value.split(',', ';', '\n').map(String::trim).filter(String::isNotBlank).forEach { result += it }
+            is Iterable<*> -> value.forEach { item -> collectForwardTargets(item, result) }
+            is Array<*> -> value.forEach { item -> collectForwardTargets(item, result) }
+            else -> if (value != null && value.javaClass.isArray) {
+                val length = java.lang.reflect.Array.getLength(value)
+                for (index in 0 until length) collectForwardTargets(java.lang.reflect.Array.get(value, index), result)
+            }
+        }
+    }
+
+    private fun armNativeForward(targets: Set<String>, source: String) {
+        val normalized = targets.filter(String::isNotBlank).toSet()
+        val expiry = System.currentTimeMillis() + FORWARD_CONTEXT_TTL_MS
+        normalized.forEach { pendingForwardTargets[it] = expiry }
+        synchronized(forwardFallbackLock) {
+            forwardFallbackExpiry = maxOf(forwardFallbackExpiry, expiry)
+            forwardFallbackBudget = maxOf(forwardFallbackBudget, if (normalized.isEmpty()) 1 else normalized.size)
+        }
+        logInfo("安全原生转发上下文已激活: source=$source targets=${normalized.size}")
+    }
+
+    private fun isFallbackForwardActive(): Boolean {
+        synchronized(forwardFallbackLock) {
+            if (forwardFallbackBudget <= 0 || forwardFallbackExpiry <= System.currentTimeMillis()) {
+                forwardFallbackBudget = 0
+                forwardFallbackExpiry = 0L
+                return false
+            }
+            return true
+        }
+    }
+
+    private fun consumeForwardContext(target: String?) {
+        if (!target.isNullOrBlank()) pendingForwardTargets.remove(target)
+        synchronized(forwardFallbackLock) {
+            if (forwardFallbackBudget > 0) forwardFallbackBudget--
+            if (forwardFallbackBudget == 0) forwardFallbackExpiry = 0L
+        }
     }
 
     private fun isPendingTarget(target: String?): Boolean {
@@ -250,10 +375,6 @@ class SendSecureMessageFeature : BaseFeature() {
         val now = System.currentTimeMillis()
         pendingForwardTargets.entries.removeIf { it.value <= now }
         return pendingForwardTargets[target]?.let { it > now } == true
-    }
-
-    private fun clearPendingTarget(target: String?) {
-        if (!target.isNullOrBlank()) pendingForwardTargets.remove(target)
     }
 
     private fun readString(receiver: Any, vararg names: String): String? {
@@ -391,5 +512,6 @@ class SendSecureMessageFeature : BaseFeature() {
         const val MESSAGE_PACKAGE = "com.tencent.mm.storage."
         const val MSG_RETRANSMIT_UI = "com.tencent.mm.ui.transmit.MsgRetransmitUI"
         const val FORWARD_CONTEXT_TTL_MS = 20_000L
+        val RETRANSMIT_TARGET_EXTRAS = arrayOf("Select_Conv_User", "Select_Contact", "Retr_MsgTalker")
     }
 }
