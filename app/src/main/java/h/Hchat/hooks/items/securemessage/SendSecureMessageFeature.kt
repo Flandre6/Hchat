@@ -1,9 +1,13 @@
 package h.Hchat.hooks.items.securemessage
 
+import android.view.MenuItem
+import android.view.View
 import de.robv.android.xposed.XC_MethodHook
+import de.robv.android.xposed.callbacks.XCallback
 import h.Hchat.dexkit.DexMethodCache
 import h.Hchat.event.Events
 import h.Hchat.hooks.api.core.WeChatApis
+import h.Hchat.hooks.api.message.SingleMessageMenuLocator
 import h.Hchat.hooks.core.BaseFeature
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
@@ -23,17 +27,22 @@ class SendSecureMessageFeature : BaseFeature() {
     @Volatile private var mergeInstalled = false
     @Volatile private var forwardContextInstalled = false
     @Volatile private var appMsgForwardInstalled = false
+    @Volatile private var menuInstalled = false
     private val pendingForwardTargets = ConcurrentHashMap<String, Long>()
     private val forwardFallbackLock = Any()
     private var forwardFallbackExpiry = 0L
     private var forwardFallbackBudget = 0
     private var prefs: android.content.SharedPreferences? = null
+    private var antiPrefs: android.content.SharedPreferences? = null
     private lateinit var methodPrefs: android.content.SharedPreferences
     @Volatile private var markerLogged = false
     @Volatile private var markerFailureLogged = false
     @Volatile private var hookMissLogged = false
     @Volatile private var sourceMergeLogged = false
     @Volatile private var forwardSourceMissLogged = false
+    @Volatile private var secureMenuFilteredLogged = false
+    @Volatile private var secureMenuDeleteMissingLogged = false
+    private val menuHookedMethods = ConcurrentHashMap.newKeySet<Method>()
 
     override fun featureId(): String = SecureMessageSettings.SEND_ID
     override fun name(): String = "安全消息"
@@ -44,6 +53,7 @@ class SendSecureMessageFeature : BaseFeature() {
 
     override fun onFeatureInstall(context: FeatureContext) {
         prefs = HchatStorage.preferences(context.hostContext(), SecureMessageSettings.SEND_PREFS)
+        antiPrefs = HchatStorage.preferences(context.hostContext(), SecureMessageSettings.ANTI_PREFS)
         methodPrefs = DexMethodCache.prefs(context.hostContext(), "Hchat_secure_message_method_cache")
         logInfo("安全消息功能已初始化，等待 DexKit")
         schedule(context)
@@ -56,7 +66,7 @@ class SendSecureMessageFeature : BaseFeature() {
 
     @Synchronized
     private fun installHook(context: FeatureContext): Boolean {
-        if (installed && mergeInstalled && forwardContextInstalled && appMsgForwardInstalled) return true
+        if (installed && mergeInstalled && forwardContextInstalled && appMsgForwardInstalled && menuInstalled) return true
         val runtimeKey = methodCacheKey(context)
         if (runtimeKey.isBlank()) {
             logError("安全消息安装跳过：微信运行时版本信息未就绪", null)
@@ -100,8 +110,111 @@ class SendSecureMessageFeature : BaseFeature() {
         val mergeReady = if (mergeInstalled) true else installSourceMergeHooks(insert)
         val forwardReady = if (forwardContextInstalled) true else installNativeForwardContext(context)
         val appMsgReady = if (appMsgForwardInstalled) true else installAppMsgForwardHook(context)
-        return insertReady && mergeReady && forwardReady && appMsgReady
+        val menuReady = if (menuInstalled) true else installSecureMenuHooks(context)
+        return insertReady && mergeReady && forwardReady && appMsgReady && menuReady
     }
+
+    /**
+     * Runs after all ordinary menu hooks so secure messages expose only WeChat's delete action.
+     * The current row is resolved from the menu creator's View.tag; no global menu state is used.
+     */
+    private fun installSecureMenuHooks(context: FeatureContext): Boolean {
+        val methods = SingleMessageMenuLocator.menuCreateMethods(context) { message, throwable ->
+            logError(message, throwable)
+        }
+        if (methods.isEmpty()) {
+            logError("安全消息菜单创建方法未定位到", null)
+            return false
+        }
+        var hooked = 0
+        methods.forEach { method ->
+            if (!menuHookedMethods.add(method)) {
+                hooked++
+                return@forEach
+            }
+            runCatching {
+                HookRegistry.get().hook(
+                    KavaReflector.accessible(method) ?: method,
+                    object : XC_MethodHook(XCallback.PRIORITY_HIGHEST) {
+                        override fun afterHookedMethod(param: MethodHookParam) {
+                            if (!enabled() || antiSecureMessageEnabled()) return
+                            val menu = param.args?.getOrNull(0) ?: return
+                            val view = param.args?.getOrNull(1) as? View ?: return
+                            val message = resolveNativeMessage(view.tag) ?: return
+                            if (!SecureMessageSource.containsMarker(readMessageSource(message))) return
+                            retainDeleteOnly(menu)
+                        }
+                    }
+                )
+                hooked++
+            }.onFailure {
+                menuHookedMethods.remove(method)
+                logError("安全消息菜单 Hook 安装失败: ${method.toGenericString()}", it)
+            }
+        }
+        menuInstalled = hooked > 0
+        if (menuInstalled) logInfo("安全消息菜单限制 Hook 已安装: ${methods.size} 个入口")
+        return menuInstalled
+    }
+
+    private fun retainDeleteOnly(menu: Any) {
+        val size = (KavaReflector.invokeMethod(menu, "size") as? Number)?.toInt() ?: return
+        if (size <= 0) return
+        val items = ArrayList<MenuItem>(size)
+        val deleteIds = LinkedHashSet<Int>()
+        for (index in 0 until size) {
+            val item = KavaReflector.invokeMethod(menu, "getItem", index) as? MenuItem ?: continue
+            items += item
+            if (isDeleteItem(item)) deleteIds += item.itemId
+        }
+        if (deleteIds.isEmpty()) {
+            if (!secureMenuDeleteMissingLogged) {
+                secureMenuDeleteMissingLogged = true
+                logError("安全消息菜单未识别到删除项，已保留原菜单避免误删", null)
+            }
+            return
+        }
+        items.asSequence()
+            .map(MenuItem::getItemId)
+            .filterNot(deleteIds::contains)
+            .distinct()
+            .forEach { itemId -> KavaReflector.invokeMethod(menu, "removeItem", itemId) }
+        if (!secureMenuFilteredLogged) {
+            secureMenuFilteredLogged = true
+            logInfo("安全消息长按菜单已限制为删除")
+        }
+    }
+
+    private fun isDeleteItem(item: MenuItem): Boolean {
+        val title = item.title?.toString()?.trim()?.lowercase(java.util.Locale.ROOT).orEmpty()
+        return title.contains("删除") || title.contains("delete") || title.contains("remove")
+    }
+
+    private fun antiSecureMessageEnabled(): Boolean =
+        antiPrefs?.getBoolean(SecureMessageSettings.KEY_ENABLE, SecureMessageSettings.DEFAULT_ENABLE) == true
+
+    private fun resolveNativeMessage(tag: Any?): Any? {
+        tag ?: return null
+        if (isNativeMessage(tag)) return tag
+        var owner: Class<*>? = tag.javaClass
+        while (owner != null && owner != Any::class.java) {
+            for (field in KavaReflector.declaredFields(owner)) {
+                if (KavaReflector.isStatic(field) || !field.type.name.startsWith(MESSAGE_PACKAGE)) continue
+                KavaReflector.readField(field, tag)?.takeIf(::isNativeMessage)?.let { return it }
+            }
+            for (method in KavaReflector.declaredMethods(owner)) {
+                if (KavaReflector.isStatic(method) || method.parameterTypes.isNotEmpty()) continue
+                if (!method.returnType.name.startsWith(MESSAGE_PACKAGE)) continue
+                KavaReflector.invoke(method, tag)?.takeIf(::isNativeMessage)?.let { return it }
+            }
+            owner = owner.superclass
+        }
+        return null
+    }
+
+    private fun isNativeMessage(value: Any): Boolean =
+        value.javaClass.name.startsWith(MESSAGE_PACKAGE) &&
+            (readNumber(value, "getMsgId", "field_msgId", "msgId", "msgID")?.toLong() ?: 0L) > 0L
 
     /**
      * Media senders assign msgSource before the final local insert. Hook the setter layer
