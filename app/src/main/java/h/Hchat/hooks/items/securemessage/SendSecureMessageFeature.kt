@@ -19,6 +19,8 @@ import org.luckypray.dexkit.query.FindMethod
 import org.luckypray.dexkit.query.matchers.MethodMatcher
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import java.util.Collections
+import java.util.IdentityHashMap
 import java.util.concurrent.ConcurrentHashMap
 
 /** Injects the WeChat secure-message marker before outgoing supported messages are stored. */
@@ -45,6 +47,7 @@ class SendSecureMessageFeature : BaseFeature() {
     @Volatile private var secureMenuHitLogged = false
     @Volatile private var secureMenuAntiSkippedLogged = false
     @Volatile private var secureMenuMessageMissLogged = false
+    @Volatile private var secureMenuMarkerMissLogged = false
     private val menuHookedMethods = ConcurrentHashMap.newKeySet<Method>()
 
     override fun featureId(): String = SecureMessageSettings.SEND_ID
@@ -75,6 +78,9 @@ class SendSecureMessageFeature : BaseFeature() {
             logError("安全消息安装跳过：微信运行时版本信息未就绪", null)
             return false
         }
+        // Menu restriction must not depend on media message insertion/source hooks.
+        // A failed media locator must never leave the native secure-message menu unfiltered.
+        val menuReady = if (menuInstalled) true else installSecureMenuHooks(context)
         val direct = context.dexFinder().localMessageInsertMethod?.takeIf(::isInsertMethod)
         if (direct != null) {
             DexMethodCache.save(methodPrefs, runtimeKey, SecureMessageSettings.CACHE_INSERT, direct)
@@ -83,7 +89,7 @@ class SendSecureMessageFeature : BaseFeature() {
         val insert = direct ?: cachedOrLocate(context, runtimeKey, SecureMessageSettings.CACHE_INSERT, INSERT_ANCHOR, ::isInsertMethod)
             ?: run {
                 logError("安全消息入库方法未定位到，微信版本可能不匹配", null)
-                return false
+                return menuReady
             }
         val insertReady = if (installed) true else runCatching {
             HookRegistry.get().hook(insert, object : XC_MethodHook() {
@@ -113,7 +119,6 @@ class SendSecureMessageFeature : BaseFeature() {
         val mergeReady = if (mergeInstalled) true else installSourceMergeHooks(insert)
         val forwardReady = if (forwardContextInstalled) true else installNativeForwardContext(context)
         val appMsgReady = if (appMsgForwardInstalled) true else installAppMsgForwardHook(context)
-        val menuReady = if (menuInstalled) true else installSecureMenuHooks(context)
         return insertReady && mergeReady && forwardReady && appMsgReady && menuReady
     }
 
@@ -161,7 +166,14 @@ class SendSecureMessageFeature : BaseFeature() {
                                 }
                                 return
                             }
-                            if (!SecureMessageSource.containsMarker(readMessageSource(message))) return
+                            val source = readMessageSource(message)
+                            if (!SecureMessageSource.containsMarker(source)) {
+                                if (!secureMenuMarkerMissLogged) {
+                                    secureMenuMarkerMissLogged = true
+                                    logInfo("安全消息菜单命中但当前消息无 sec_msg_node: class=${message.javaClass.name} sourceLen=${source.length}")
+                                }
+                                return
+                            }
                             retainDeleteOnly(menu)
                         }
                     }
@@ -214,18 +226,37 @@ class SendSecureMessageFeature : BaseFeature() {
         antiPrefs?.getBoolean(SecureMessageSettings.KEY_ENABLE, SecureMessageSettings.ANTI_DEFAULT_ENABLE) == true
 
     private fun resolveNativeMessage(tag: Any?): Any? {
-        tag ?: return null
-        if (isNativeMessage(tag)) return tag
-        var owner: Class<*>? = tag.javaClass
+        val visited = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
+        return resolveNativeMessage(tag, visited, 0)
+    }
+
+    private fun resolveNativeMessage(value: Any?, visited: MutableSet<Any>, depth: Int): Any? {
+        if (value == null || depth > 4 || !visited.add(value)) return null
+        if (isNativeMessage(value)) return value
+        if (value is View) return resolveNativeMessage(value.tag, visited, depth + 1)
+        if (value is Iterable<*>) {
+            value.forEach { resolveNativeMessage(it, visited, depth + 1)?.let { message -> return message } }
+            return null
+        }
+        if (value.javaClass.isArray) {
+            for (index in 0 until java.lang.reflect.Array.getLength(value)) {
+                resolveNativeMessage(java.lang.reflect.Array.get(value, index), visited, depth + 1)
+                    ?.let { return it }
+            }
+            return null
+        }
+        var owner: Class<*>? = value.javaClass
         while (owner != null && owner != Any::class.java) {
             for (field in KavaReflector.declaredFields(owner)) {
-                if (KavaReflector.isStatic(field) || !field.type.name.startsWith(MESSAGE_PACKAGE)) continue
-                KavaReflector.readField(field, tag)?.takeIf(::isNativeMessage)?.let { return it }
+                if (KavaReflector.isStatic(field) || field.type.isPrimitive || field.type == String::class.java) continue
+                val fieldValue = KavaReflector.readField(field, value) ?: continue
+                resolveNativeMessage(fieldValue, visited, depth + 1)?.let { return it }
             }
             for (method in KavaReflector.declaredMethods(owner)) {
                 if (KavaReflector.isStatic(method) || method.parameterTypes.isNotEmpty()) continue
                 if (!method.returnType.name.startsWith(MESSAGE_PACKAGE)) continue
-                KavaReflector.invoke(method, tag)?.takeIf(::isNativeMessage)?.let { return it }
+                val result = KavaReflector.invoke(method, value) ?: continue
+                resolveNativeMessage(result, visited, depth + 1)?.let { return it }
             }
             owner = owner.superclass
         }
@@ -541,7 +572,9 @@ class SendSecureMessageFeature : BaseFeature() {
 
     private fun readMessageSource(message: Any): String {
         for (fieldName in SOURCE_FIELDS) {
-            (KavaReflector.readField(message, fieldName) as? String)?.let { return it }
+            (KavaReflector.readField(message, fieldName) as? String)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { return it }
         }
         return (KavaReflector.invokeMethod(message, "getMsgSource") as? String).orEmpty()
     }
