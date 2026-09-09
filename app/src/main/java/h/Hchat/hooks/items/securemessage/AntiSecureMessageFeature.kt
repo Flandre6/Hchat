@@ -244,7 +244,7 @@ class AntiSecureMessageFeature : BaseFeature() {
         value.javaClass.name.startsWith(MESSAGE_PACKAGE) &&
             (readNumber(value, "getMsgId", "field_msgId", "msgId", "msgID")?.toLong() ?: 0L) > 0L
 
-    private fun enabled(): Boolean = prefs?.getBoolean(SecureMessageSettings.KEY_ENABLE, SecureMessageSettings.DEFAULT_ENABLE) == true
+    private fun enabled(): Boolean = prefs?.getBoolean(SecureMessageSettings.KEY_ENABLE, SecureMessageSettings.ANTI_DEFAULT_ENABLE) == true
 
     private fun isMessageLike(value: Any): Boolean =
         KavaReflector.readField(value, "field_type") != null ||

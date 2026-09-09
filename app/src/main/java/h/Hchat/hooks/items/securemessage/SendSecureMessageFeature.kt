@@ -42,6 +42,9 @@ class SendSecureMessageFeature : BaseFeature() {
     @Volatile private var forwardSourceMissLogged = false
     @Volatile private var secureMenuFilteredLogged = false
     @Volatile private var secureMenuDeleteMissingLogged = false
+    @Volatile private var secureMenuHitLogged = false
+    @Volatile private var secureMenuAntiSkippedLogged = false
+    @Volatile private var secureMenuMessageMissLogged = false
     private val menuHookedMethods = ConcurrentHashMap.newKeySet<Method>()
 
     override fun featureId(): String = SecureMessageSettings.SEND_ID
@@ -137,10 +140,27 @@ class SendSecureMessageFeature : BaseFeature() {
                     KavaReflector.accessible(method) ?: method,
                     object : XC_MethodHook(XCallback.PRIORITY_HIGHEST) {
                         override fun afterHookedMethod(param: MethodHookParam) {
-                            if (!enabled() || antiSecureMessageEnabled()) return
+                            if (!enabled()) return
+                            if (antiSecureMessageEnabled()) {
+                                if (!secureMenuAntiSkippedLogged) {
+                                    secureMenuAntiSkippedLogged = true
+                                    logInfo("安全消息菜单限制已跳过：反安全消息开关处于开启状态")
+                                }
+                                return
+                            }
+                            if (!secureMenuHitLogged) {
+                                secureMenuHitLogged = true
+                                logInfo("安全消息菜单创建入口已命中")
+                            }
                             val menu = param.args?.getOrNull(0) ?: return
                             val view = param.args?.getOrNull(1) as? View ?: return
-                            val message = resolveNativeMessage(view.tag) ?: return
+                            val message = resolveNativeMessage(view.tag) ?: run {
+                                if (!secureMenuMessageMissLogged) {
+                                    secureMenuMessageMissLogged = true
+                                    logInfo("安全消息菜单命中但未从 View.tag 解析到微信消息")
+                                }
+                                return
+                            }
                             if (!SecureMessageSource.containsMarker(readMessageSource(message))) return
                             retainDeleteOnly(menu)
                         }
@@ -191,7 +211,7 @@ class SendSecureMessageFeature : BaseFeature() {
     }
 
     private fun antiSecureMessageEnabled(): Boolean =
-        antiPrefs?.getBoolean(SecureMessageSettings.KEY_ENABLE, SecureMessageSettings.DEFAULT_ENABLE) == true
+        antiPrefs?.getBoolean(SecureMessageSettings.KEY_ENABLE, SecureMessageSettings.ANTI_DEFAULT_ENABLE) == true
 
     private fun resolveNativeMessage(tag: Any?): Any? {
         tag ?: return null
@@ -498,7 +518,7 @@ class SendSecureMessageFeature : BaseFeature() {
         return null
     }
 
-    private fun enabled(): Boolean = prefs?.getBoolean(SecureMessageSettings.KEY_ENABLE, SecureMessageSettings.DEFAULT_ENABLE) == true
+    private fun enabled(): Boolean = prefs?.getBoolean(SecureMessageSettings.KEY_ENABLE, SecureMessageSettings.SEND_DEFAULT_ENABLE) == true
 
     private fun isMessageLike(value: Any): Boolean =
         readNumber(value, "field_type", "type", "getType", "getMsgType") != null ||
