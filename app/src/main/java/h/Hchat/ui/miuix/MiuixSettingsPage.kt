@@ -249,6 +249,8 @@ import h.Hchat.hooks.items.fakelocation.FakeLocationFeature
 import h.Hchat.hooks.items.fakelocation.FakeLocationSettings
 import h.Hchat.hooks.items.fakescancamera.FakeScanCameraFeature
 import h.Hchat.hooks.items.fakescancamera.FakeScanCameraSettings
+import h.Hchat.hooks.items.virtualcamera.VirtualCameraFeature
+import h.Hchat.hooks.items.virtualcamera.VirtualCameraSettings
 import h.Hchat.hooks.items.fakevoiceduration.FakeVoiceDurationFeature
 import h.Hchat.hooks.items.fakevoiceduration.FakeVoiceDurationSettings
 import h.Hchat.hooks.items.forwardlimit.RemoveForwardLimitFeature
@@ -481,6 +483,7 @@ import h.Hchat.ui.FeatureSettingsProvider
 import h.Hchat.ui.UIRegistry
 import h.Hchat.utils.KavaReflector
 import h.Hchat.utils.KeywordReplacementRule
+import h.Hchat.utils.HLog
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import org.json.JSONArray
@@ -556,6 +559,7 @@ private const val SCRIPT_AGENT_ATTACHMENT_REQUEST_CODE = 0x4843525E
 private const val PLUGIN_MARKET_EXTRA_FILE_REQUEST_CODE = 0x4843525F
 private const val SCRIPT_PLUGIN_EXPORT_REQUEST_CODE = 0x48435260
 private const val SCRIPT_PLUGIN_IMPORT_REQUEST_CODE = 0x48435261
+private const val VIRTUAL_CAMERA_MEDIA_REQUEST_CODE = 0x48435262
 private const val MARKDOWN_LINK_TAG = "md_link"
 private val MARKDOWN_LINK_REGEX = Regex("""\[([^\]]+)]\(([^)\s]+)\)""")
 private val NAVIGATION_BUTTON_MIN_INSET = 24.dp
@@ -2115,6 +2119,114 @@ private object AutoReplyFilePickerBridge {
     }
 }
 
+private object VirtualCameraMediaPickerBridge {
+    private val hookedClasses = HashSet<Class<*>>()
+    private val copyExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "Hchat-VirtualCameraMediaCopy").apply { isDaemon = true }
+    }
+    private var currentActivity: Activity? = null
+    private var onPicked: ((String, String, String) -> Unit)? = null
+
+    @Synchronized
+    fun launch(activity: Activity, onResult: (String, String, String) -> Unit) {
+        currentActivity = activity
+        onPicked = onResult
+        hookActivityResult(activity.javaClass)
+        hookActivityResult(Activity::class.java)
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }.preferSystemDocumentsUi(activity)
+        try {
+            activity.startActivityForResult(intent, VIRTUAL_CAMERA_MEDIA_REQUEST_CODE)
+        } catch (_: Throwable) {
+            val fallback = Intent(Intent.ACTION_GET_CONTENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            activity.startActivityForResult(
+                Intent.createChooser(fallback, "选择虚拟摄像头图片或视频"),
+                VIRTUAL_CAMERA_MEDIA_REQUEST_CODE
+            )
+        }
+    }
+
+    @Synchronized
+    private fun hookActivityResult(clazz: Class<*>) {
+        if (!hookedClasses.add(clazz)) return
+        try {
+            XposedBridge.hookAllMethods(clazz, "onActivityResult", object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    if ((param.args.getOrNull(0) as? Int) != VIRTUAL_CAMERA_MEDIA_REQUEST_CODE) return
+                    if ((param.args.getOrNull(1) as? Int) != Activity.RESULT_OK) return
+                    val data = param.args.getOrNull(2) as? Intent ?: return
+                    val uri = data.data ?: return
+                    val activity = currentActivity ?: return
+                    val callback = onPicked ?: return
+                    onPicked = null
+                    currentActivity = null
+                    copyExecutor.execute {
+                        val copied = copyVirtualCameraMedia(activity, uri)
+                        activity.runOnUiThread {
+                            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                            if (copied == null) {
+                                Toast.makeText(activity, "复制媒体失败，请重新选择", Toast.LENGTH_SHORT).show()
+                            } else {
+                                callback(copied.first, copied.second, copied.third)
+                            }
+                        }
+                    }
+                }
+            })
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun copyVirtualCameraMedia(context: Context, uri: Uri): Triple<String, String, String>? {
+        return runCatching {
+            val resolver = context.contentResolver
+            val mime = resolver.getType(uri).orEmpty()
+            val name = queryDisplayName(context, uri)?.replace(Regex("""[\\/:*?"<>|]"""), "_")
+                ?.takeIf { it.isNotBlank() } ?: "virtual_media"
+            val kind = when {
+                mime.startsWith("image/") -> VirtualCameraSettings.MEDIA_KIND_IMAGE
+                mime.startsWith("video/") -> VirtualCameraSettings.MEDIA_KIND_VIDEO
+                else -> {
+                    val extension = name.substringAfterLast('.', "").lowercase()
+                    if (extension in setOf("jpg", "jpeg", "png", "webp", "bmp", "gif", "heic", "heif")) {
+                        VirtualCameraSettings.MEDIA_KIND_IMAGE
+                    } else {
+                        VirtualCameraSettings.MEDIA_KIND_VIDEO
+                    }
+                }
+            }
+            val directory = File(context.filesDir, "Hchat/virtual_camera").apply { mkdirs() }
+            val target = File(directory, "${System.currentTimeMillis()}_$name.part")
+            resolver.openInputStream(uri)?.use { input ->
+                target.outputStream().use { output -> input.copyTo(output) }
+            } ?: return null
+            if (!target.isFile || target.length() <= 0L) return null
+            val finalTarget = File(directory, target.name.removeSuffix(".part"))
+            if (!target.renameTo(finalTarget)) {
+                target.copyTo(finalTarget, overwrite = true)
+                target.delete()
+            }
+            if (!finalTarget.isFile || finalTarget.length() <= 0L) return null
+            directory.listFiles()?.forEach { candidate ->
+                if (candidate.isFile && candidate != finalTarget) candidate.delete()
+            }
+            Triple(finalTarget.absolutePath, name, kind)
+        }.onFailure {
+            HLog.e("[Hchat:VirtualCamera] 复制虚拟媒体失败: $uri", it)
+        }.getOrNull()
+    }
+}
+
 private object ScheduledTaskFilePickerBridge {
     private val hookedClasses = HashSet<Class<*>>()
     private var onPicked: ((List<String>) -> Unit)? = null
@@ -2633,6 +2745,7 @@ private object HchatConfigBackup {
         MultiRecallSettings.PREFS_NAME,
         VoiceForwardSettings.PREFS_NAME,
         FakeScanCameraSettings.PREFS_NAME,
+        VirtualCameraSettings.PREFS_NAME,
         RedPacketSettings.PREFS_NAME,
         AntiRecallSettings.PREFS_NAME,
         ProtobufPacketSettings.PREFS_NAME,
@@ -3101,7 +3214,8 @@ private fun practicalFeatureGroups(
                 UploadTransparentAvatarFeature.ID,
                 CustomBottomBarFeature.ID,
                 FloatingBottomBarSettings.FEATURE_ID,
-                HomeSidePanelFeature.ID
+                HomeSidePanelFeature.ID,
+                VirtualCameraFeature.ID
             )
         ),
         FeatureGroupEntry(
@@ -3936,6 +4050,9 @@ private fun featureSubSearchTerms(featureId: String): List<String> {
         WeChatTabletFeature.ID -> listOf("平板模式", "Pad模式", "设备登录", "多设备登录", "登录为平板")
         DisableHotUpdateFeature.ID -> listOf("屏蔽热更新", "禁用热更新", "Tinker", "补丁", "热补丁")
         FakeScanCameraFeature.ID -> listOf("伪造扫码相机", "扫码相机", "扫一扫", "相册扫码", "扫码入口")
+        VirtualCameraFeature.ID -> listOf(
+            "虚拟摄像头", "摄像头替换", "Camera1", "Camera2", "本地图片", "本地视频", "相机画面"
+        )
         SkipWebRiskSettingsProvider.FEATURE_ID -> listOf("跳过网页风险", "网页风险", "WebView", "风险拦截")
         EditMessageFeature.ID -> listOf("修改聊天记录", "编辑消息", "改消息", "消息XML", "发送XML")
         ProtobufPacketFeature.ID -> listOf("Protobuf抓包", "Protobuf发包", "抓包", "发包", "pb", "网络包", "重放")
@@ -4601,6 +4718,7 @@ private fun FeatureSettingsPage(
         VoiceForwardFeature.ID -> VoiceForwardMiuixPage(context, provider, onBack)
         ScheduledTaskFeature.ID -> ScheduledTaskMiuixPage(context, provider, onBack)
         FakeScanCameraFeature.ID -> FakeScanCameraMiuixPage(context, provider, onBack)
+        VirtualCameraFeature.ID -> VirtualCameraMiuixPage(context, provider, onBack)
         FinderMediaDownloadFeature.ID -> FinderMediaDownloadMiuixPage(context, provider, onBack)
         ProtobufPacketFeature.ID -> ProtobufPacketMiuixPage(context, provider, onBack)
         CrashReportSettingsProvider.ID -> CrashReportMiuixPage(context, provider, onBack)
@@ -26196,6 +26314,117 @@ private fun FakeScanCameraMiuixPage(
                         "让相册识别二维码按相机扫码来源处理",
                         FakeScanCameraSettings.DEFAULT_ENABLE
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VirtualCameraMiuixPage(
+    context: Context,
+    provider: FeatureSettingsProvider,
+    onBack: () -> Unit
+) {
+    val sp = remember { HchatStorage.preferences(context, VirtualCameraSettings.PREFS_NAME) }
+    val listState = rememberLazyListState()
+    val scrollBehavior = MiuixScrollBehavior()
+    var enabled by remember {
+        mutableStateOf(sp.getBoolean(VirtualCameraSettings.KEY_ENABLE, VirtualCameraSettings.DEFAULT_ENABLE))
+    }
+    var mediaPath by remember {
+        mutableStateOf(sp.getString(VirtualCameraSettings.KEY_MEDIA_PATH, VirtualCameraSettings.DEFAULT_MEDIA_PATH).orEmpty())
+    }
+    var mediaName by remember {
+        mutableStateOf(sp.getString(VirtualCameraSettings.KEY_MEDIA_NAME, VirtualCameraSettings.DEFAULT_MEDIA_NAME).orEmpty())
+    }
+    var mediaKind by remember {
+        mutableStateOf(sp.getString(VirtualCameraSettings.KEY_MEDIA_KIND, VirtualCameraSettings.DEFAULT_MEDIA_KIND).orEmpty())
+    }
+
+    PageScaffold(
+        title = provider.title(),
+        largeTitle = provider.title(),
+        scrollBehavior = scrollBehavior,
+        bottomBar = { BottomActionBar("返回", onBack) }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
+            state = listState,
+            contentPadding = PaddingValues(
+                top = padding.calculateTopPadding() + 8.dp,
+                bottom = padding.calculateBottomPadding() + 84.dp
+            )
+        ) {
+            item { SmallTitle(text = "虚拟画面") }
+            item {
+                SettingsCard {
+                    SwitchRow(
+                        checked = enabled,
+                        title = "启用虚拟摄像头",
+                        summary = "仅作用于普通微信相机页；身份、人脸、活体和 Soter 页面自动使用真实摄像头",
+                        onCheckedChange = {
+                            enabled = it
+                            sp.edit().putBoolean(VirtualCameraSettings.KEY_ENABLE, it).apply()
+                        }
+                    )
+                    InsetDivider()
+                    ActionRow(
+                        title = "选择图片或视频",
+                        summary = if (mediaName.isBlank()) "尚未选择；支持系统能解码的图片和视频" else mediaName,
+                        onClick = {
+                            val activity = context as? Activity ?: WeChatApis.currentActivity()?.currentActivity() as? Activity
+                            if (activity == null) {
+                                Toast.makeText(context, "当前页面无法打开系统文件选择器", Toast.LENGTH_SHORT).show()
+                            } else {
+                                VirtualCameraMediaPickerBridge.launch(activity) { path, name, kind ->
+                                    mediaPath = path
+                                    mediaName = name
+                                    mediaKind = kind
+                                    sp.edit()
+                                        .putString(VirtualCameraSettings.KEY_MEDIA_PATH, path)
+                                        .putString(VirtualCameraSettings.KEY_MEDIA_NAME, name)
+                                        .putString(VirtualCameraSettings.KEY_MEDIA_KIND, kind)
+                                        .apply()
+                                    Toast.makeText(context, "已复制到 Hchat 私有目录", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    )
+                    if (mediaPath.isNotBlank()) {
+                        InsetDivider()
+                        ActionRow(
+                            title = "清除虚拟媒体",
+                            summary = when (mediaKind) {
+                                VirtualCameraSettings.MEDIA_KIND_IMAGE -> "当前类型：图片"
+                                VirtualCameraSettings.MEDIA_KIND_VIDEO -> "当前类型：视频"
+                                else -> "清除已选择的文件"
+                            },
+                            onClick = {
+                                runCatching { File(mediaPath).delete() }
+                                mediaPath = ""
+                                mediaName = ""
+                                mediaKind = ""
+                                sp.edit()
+                                    .remove(VirtualCameraSettings.KEY_MEDIA_PATH)
+                                    .remove(VirtualCameraSettings.KEY_MEDIA_NAME)
+                                    .remove(VirtualCameraSettings.KEY_MEDIA_KIND)
+                                    .apply()
+                            }
+                        )
+                    }
+                }
+            }
+            item { SmallTitle(text = "说明") }
+            item {
+                SettingsCard {
+                    InfoRow("Camera1", "预览、回调与拍照")
+                    InsetDivider()
+                    InfoRow("Camera2", "预览、录像与 YUV 分析流")
+                    InsetDivider()
+                    InfoRow("生效方式", "开启后强制停止并重启微信")
+                    InsetDivider()
+                    InfoRow("当前验证", "微信 8.0.77(3160) 静态适配，需真机验证")
                 }
             }
         }

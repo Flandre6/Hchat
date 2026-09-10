@@ -19,6 +19,7 @@ import h.Hchat.hooks.items.editmsg.EditMessageFeature
 import h.Hchat.hooks.items.emojisave.EmojiSaveFeature
 import h.Hchat.hooks.items.fakelocation.FakeLocationFeature
 import h.Hchat.hooks.items.fakescancamera.FakeScanCameraFeature
+import h.Hchat.hooks.items.virtualcamera.VirtualCameraFeature
 import h.Hchat.hooks.items.fakevoiceduration.FakeVoiceDurationFeature
 import h.Hchat.hooks.items.floatingshortcut.FloatingShortcutFeature
 import h.Hchat.hooks.items.forwardlimit.RemoveForwardLimitFeature
@@ -183,6 +184,7 @@ object FeatureRegistry {
             .register(AntiSecureMessageFeature())
             .register(ScheduledTaskFeature())
             .register(FakeScanCameraFeature())
+            .register(VirtualCameraFeature())
             .register(ProtobufPacketFeature())
             .register(StatusTextLimitFeature())
             .register(FinderMediaDownloadFeature())
