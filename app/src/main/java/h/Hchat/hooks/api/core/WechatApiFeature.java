@@ -163,6 +163,7 @@ public class WechatApiFeature implements Feature {
                     context.dexFinder().resolveDatabaseApi();
                     databaseListenerApi.install();
                     messageChangeApi.install();
+                    messageObserveApi.install();
                     conversationChangeApi.install();
                     contactChangeApi.install();
                     chatroomChangeApi.install();
@@ -211,6 +212,10 @@ public class WechatApiFeature implements Feature {
                 || message.contains("未解析")
                 || message.contains("缺失")
                 || message.contains("无合适")
+                || message.contains("AddMsg事件Hook")
+                || message.contains("数据库变更监听Hook")
+                || message.contains("消息变更监听已安装")
+                || message.contains("消息观察已安装")
                 || message.contains("ERROR")
                 || message.contains("error");
     }

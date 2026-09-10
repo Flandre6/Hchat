@@ -53,6 +53,14 @@ public final class WeChatMessageEventApi {
                 && parseApi != null && eventBus != null;
     }
 
+    /**
+     * 候选 AddMsg 类存在并不代表 Hook 一定安装成功。业务层必须以实际 Hook
+     * 数量为准，否则会错误关闭数据库兜底，导致红包、转账等入站功能静默失效。
+     */
+    public boolean isInstalled() {
+        return hooked;
+    }
+
     public void installAddMsgHook() {
         if (!isAvailable()) return;
         if (hooked) {
