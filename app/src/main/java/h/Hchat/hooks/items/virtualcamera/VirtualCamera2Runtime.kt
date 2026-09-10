@@ -213,7 +213,7 @@ private class VirtualYuvWriter(
         runCatching {
             val path = mediaPath() ?: return@runCatching
             val frameKey = "$path|${java.io.File(path).lastModified()}|${info.width}x${info.height}"
-            val nv21 = if (frameKey == cachedFrameKey) cachedFrame else null
+            val nv21 = (if (frameKey == cachedFrameKey) cachedFrame else null)
                 ?: VirtualCameraMedia.decodeFrame(path, info.width, info.height)?.let { bitmap ->
                     VirtualCameraMedia.bitmapToNv21(bitmap, info.width, info.height).also {
                         bitmap.recycle()
