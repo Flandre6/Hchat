@@ -2,6 +2,8 @@
 
 ## 协作与发布规则
 
+内存管理：关键词通知的头像缓存按 Bitmap 分配字节数限制为 8 MiB，淘汰时只释放缓存引用，不主动回收通知仍可能使用的 Bitmap。脚本通过 Bridge 单独卸载 Hook 时，成功解除后同步移除全局 HookRegistry 句柄，避免热重载重复积累；卸载失败的句柄保留供后续清理。此轮不改变 DexKit 与插件 SO 的生命周期。
+
 - 提交信息、推送说明、Release notes 和工作流说明统一使用中文。
 - 本地默认只负责修改代码、文档和配置；除非明确允许，否则一律不在本地执行 Gradle。
 - 明确允许“本地编译”或“编译检查”时，可以执行 `:app:compileReleaseKotlin` / `:app:compileReleaseJavaWithJavac` 这类只编译不出包的任务。

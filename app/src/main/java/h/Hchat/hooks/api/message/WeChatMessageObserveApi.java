@@ -16,7 +16,13 @@ import h.Hchat.hooks.api.model.WeChatTransferMsg;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicLong;
+import android.os.SystemClock;
+import h.Hchat.utils.HLog;
 
 /**
  * 业务级消息观察 API。
@@ -381,11 +387,14 @@ public final class WeChatMessageObserveApi {
      * 消息回调不能阻塞微信 AddMsg/数据库线程。单线程队列既保持消息顺序，
      * 又把自动回复、转发、通知等订阅者从收消息热路径移开。
      */
-    private final ExecutorService dispatchExecutor = Executors.newSingleThreadExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "Hchat-MessageDispatch");
-        thread.setDaemon(true);
-        return thread;
-    });
+    // 消息回调必须有界；慢插件不能无限保留消息/XML对象拖高主进程堆。
+    private final ExecutorService dispatchExecutor = new ThreadPoolExecutor(
+            1, 1, 0L, TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(256),
+            runnable -> { Thread thread = new Thread(runnable, "Hchat-MessageDispatch");
+                thread.setDaemon(true); return thread; },
+            new ThreadPoolExecutor.AbortPolicy());
+    private final AtomicLong dispatchDropLogAt = new AtomicLong(0L);
     private final ConcurrentHashMap<String, Long> recentOutgoing = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> recentIncomingRealtimeMessages = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> recentIncomingDatabaseMessages = new ConcurrentHashMap<>();
@@ -741,7 +750,16 @@ public final class WeChatMessageObserveApi {
 
     private void dispatch(ObservedMessage message) {
         if (message == null || listeners.isEmpty()) return;
-        dispatchExecutor.execute(() -> dispatchNow(message));
+        try {
+            dispatchExecutor.execute(() -> dispatchNow(message));
+        } catch (RejectedExecutionException full) {
+            long now = SystemClock.elapsedRealtime();
+            long previous = dispatchDropLogAt.get();
+            if ((previous == 0L || now - previous >= 10000L)
+                    && dispatchDropLogAt.compareAndSet(previous, now)) {
+                HLog.e("[Hchat:MessageObserve] 消息观察队列已满，已跳过新回调；请检查慢订阅者。微信消息不受删除影响");
+            }
+        }
     }
 
     private void dispatchNow(ObservedMessage message) {

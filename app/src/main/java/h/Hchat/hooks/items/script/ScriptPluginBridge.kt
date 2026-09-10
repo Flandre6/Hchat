@@ -514,6 +514,7 @@ class ScriptPluginBridge internal constructor(
 
     fun unhook(unhook: XC_MethodHook.Unhook?) {
         unhook?.unhook()
+        HookRegistry.get().remove(unhook)
     }
 
     fun unhook(pluginId: String?, unhook: XC_MethodHook.Unhook?) {
@@ -537,7 +538,7 @@ class ScriptPluginBridge internal constructor(
             }
         }
         for (hook in pluginHooks.remove(pluginId).orEmpty()) {
-            runCatching { hook.unhook() }
+            runCatching { unhook(hook) }
         }
     }
 

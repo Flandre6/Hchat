@@ -27,6 +27,11 @@ class HookRegistry private constructor() {
 
     fun size(): Int = unhooks.size
 
+    /** 从全局登记表移除已由功能自身卸载的句柄，避免反复热重载时列表只增不减。 */
+    fun remove(unhook: XC_MethodHook.Unhook?) {
+        if (unhook != null) unhooks.remove(unhook)
+    }
+
     fun unhookAll() {
         for (unhook in unhooks) {
             try {

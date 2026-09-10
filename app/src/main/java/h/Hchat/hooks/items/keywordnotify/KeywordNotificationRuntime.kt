@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.LruCache
 import android.graphics.Color
 import android.media.Ringtone
 import android.media.RingtoneManager
@@ -39,7 +40,6 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.regex.Pattern
@@ -54,7 +54,11 @@ object KeywordNotificationRuntime {
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "Hchat-KeywordNotify").apply { isDaemon = true }
     }
-    private val avatarCache = ConcurrentHashMap<String, Bitmap?>()
+    // 按字节限制缓存；通知可能仍持有淘汰的图片，交给 GC 回收，不能直接 recycle。
+    private val avatarCache = object : LruCache<String, Bitmap>(8 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap): Int =
+            value.allocationByteCount.coerceAtLeast(1)
+    }
     @Volatile private var avatarRoot: String? = null
     @Volatile private var lastManualSoundAt: Long = 0L
 
@@ -470,14 +474,14 @@ object KeywordNotificationRuntime {
         if (CustomFriendAvatarSettings.notificationsEnabled(context)) {
             CustomFriendAvatarStore.loadBitmap(context, wxId)?.let { return it }
         }
-        if (avatarCache.containsKey(wxId)) return avatarCache[wxId]
+        avatarCache.get(wxId)?.let { return it }
         val contacts = WeChatApis.contact().contacts()
         val primary = contacts?.getAvatarUrl(wxId, true).orEmpty()
         val backup = contacts?.getAvatarUrl(wxId, false).orEmpty()
         val bitmap = avatarSources(context, wxId, primary, backup).firstNotNullOfOrNull { source ->
             loadBitmap(source)
         }
-        avatarCache[wxId] = bitmap
+        bitmap?.let { avatarCache.put(wxId, it) }
         return bitmap
     }
 
