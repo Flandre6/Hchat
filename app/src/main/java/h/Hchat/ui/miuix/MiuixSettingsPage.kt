@@ -42872,8 +42872,6 @@ private fun AboutCard() {
         InfoRow(label = "宿主", value = hostVersion)
         InsetDivider()
         InfoRow(label = "Hchat作者", value = "。。")
-        InsetDivider()
-        InfoRow(label = "分支作者", value = "企鹅")
     }
 }
 
