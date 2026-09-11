@@ -38,7 +38,6 @@ object ConversationGroupStore {
     private const val VIRTUAL_TALKER_PREFIX = "wxid_hchat_group_"
     private const val TAG = "[Hchat:ConversationGroup]"
     private val lock = Any()
-    @Volatile private var cachedSnapshot: CachedSnapshot? = null
 
     @JvmStatic
     fun accountKey(): String {
@@ -242,12 +241,13 @@ object ConversationGroupStore {
     fun descendantIds(groups: List<ConversationGroup>, id: String): Set<String> {
         val rootId = id.trim()
         if (rootId.isBlank()) return emptySet()
-        if (groups.none { it.id == rootId }) return emptySet()
+        val normalized = normalize(groups)
+        if (normalized.none { it.id == rootId }) return emptySet()
 
         val descendants = linkedSetOf<String>()
         var frontier = setOf(rootId)
         while (frontier.isNotEmpty()) {
-            val children = groups.asSequence()
+            val children = normalized.asSequence()
                 .filter { it.parentId in frontier && it.id !in descendants }
                 .map { it.id }
                 .toCollection(linkedSetOf())
@@ -262,7 +262,7 @@ object ConversationGroupStore {
     fun conversationOwner(groups: List<ConversationGroup>, talker: String): String? {
         val normalizedTalker = talker.trim()
         if (normalizedTalker.isBlank()) return null
-        return groups.firstOrNull {
+        return normalize(groups).firstOrNull {
             normalizedTalker in it.conversationIds
         }?.id
     }
@@ -804,15 +804,8 @@ object ConversationGroupStore {
     ): List<ConversationGroup> {
         val prefs = HchatStorage.preferences(context, PREFS_NAME)
         val raw = prefs.getString(KEY_DATA, "").orEmpty()
-        cachedSnapshot?.takeIf { it.account == account && it.raw == raw }
-            ?.let { return it.groups }
-        if (raw.isBlank()) {
-            return emptyList<ConversationGroup>().also {
-                cachedSnapshot = CachedSnapshot(account, raw, it)
-            }
-        }
-        var cachedRaw = raw
-        val groups = runCatching {
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
             val root = JSONObject(raw)
             val storedSchemaVersion = root.optInt(KEY_SCHEMA_VERSION, 0)
             val accounts = root.optJSONObject(KEY_ACCOUNTS) ?: return@runCatching emptyList()
@@ -825,11 +818,8 @@ object ConversationGroupStore {
                 accounts.put(account, encodeGroups(normalized))
                 root.put(KEY_SCHEMA_VERSION, SCHEMA_VERSION)
                 root.put(KEY_ACCOUNTS, accounts)
-                val repairedRaw = root.toString()
-                if (!prefs.edit().putString(KEY_DATA, repairedRaw).commit()) {
+                if (!prefs.edit().putString(KEY_DATA, root.toString()).commit()) {
                     HLog.e("$TAG 保存账号 $account 的修复结果失败")
-                } else {
-                    cachedRaw = repairedRaw
                 }
             }
             normalized
@@ -837,8 +827,6 @@ object ConversationGroupStore {
             HLog.e("$TAG 读取账号 $account 的聊天分组失败: ${it.message}", it)
             emptyList()
         }
-        cachedSnapshot = CachedSnapshot(account, cachedRaw, groups)
-        return groups
     }
 
     private fun saveLocked(
@@ -860,10 +848,8 @@ object ConversationGroupStore {
         accounts.put(account, encodeGroups(groups))
         root.put(KEY_SCHEMA_VERSION, SCHEMA_VERSION)
         root.put(KEY_ACCOUNTS, accounts)
-        val updatedRaw = root.toString()
-        val committed = prefs.edit().putString(KEY_DATA, updatedRaw).commit()
+        val committed = prefs.edit().putString(KEY_DATA, root.toString()).commit()
         if (!committed) HLog.e("$TAG 保存账号 $account 的聊天分组失败")
-        else cachedSnapshot = CachedSnapshot(account, updatedRaw, groups)
         return committed
     }
 
@@ -1358,10 +1344,4 @@ object ConversationGroupStore {
             require(item.opt(key) is T) { "分组 $groupName 的${fieldName}字段格式错误" }
         }
     }
-
-    private data class CachedSnapshot(
-        val account: String,
-        val raw: String,
-        val groups: List<ConversationGroup>
-    )
 }

@@ -197,6 +197,7 @@ object ScriptPluginRuntime {
     private data class LoadedPlugin(
         val plugin: ScriptPlugin,
         val interpreter: Interpreter,
+        val waBridge: ScriptWaBridge,
         @Volatile var hasSendButtonCallback: Boolean,
         @Volatile var hasLongSendButtonCallback: Boolean,
         @Volatile var hasHandleMsgCallback: Boolean,
@@ -818,24 +819,38 @@ object ScriptPluginRuntime {
         return SendButtonEventResult(intercepted, handledBy)
     }
 
+    fun hasHandleMsgCallbacks(): Boolean = loadedPlugins.values.any { it.hasHandleMsgCallback }
+
     fun dispatchOnHandleMsg(msgInfoBean: ScriptMessageBean) {
-        if (loadedPlugins.isEmpty()) return
+        captureHandleMsgDispatch(msgInfoBean)?.run()
+    }
+
+    // 入队时固定插件实例，排队期间重载不会把旧消息交给新解释器。
+    fun captureHandleMsgDispatch(msgInfoBean: ScriptMessageBean): Runnable? {
         val targets = loadedPlugins.values
             .asSequence()
             .filter { it.hasHandleMsgCallback }
             .sortedBy { it.plugin.id.lowercase(Locale.US) }
             .toList()
-        if (targets.isEmpty()) return
-        for (loaded in targets) {
-            try {
-                withInterpreterLock(loaded.interpreter) {
-                    loaded.interpreter.set("__hchat_msg_info", msgInfoBean)
-                    loaded.interpreter.eval("onHandleMsg(__hchat_msg_info);")
-                }
-            } catch (t: Throwable) {
-                if (!isMissingCallbackError(t, "onHandleMsg")) {
-                    h.Hchat.utils.HLog.e("$TAG 消息监听回调失败: ${loaded.plugin.name} ${t.message}", t)
-                    bridge?.log(loaded.plugin.name, loaded.plugin.dir, "消息监听回调失败: ${t}")
+        if (targets.isEmpty()) return null
+        return Runnable {
+            for (loaded in targets) {
+                if (loadedPlugins[loaded.plugin.id] !== loaded) continue
+                try {
+                    withInterpreterLock(loaded.interpreter) {
+                        if (loadedPlugins[loaded.plugin.id] !== loaded) return@withInterpreterLock
+                        loaded.interpreter.set("__hchat_msg_info", msgInfoBean)
+                        try {
+                            loaded.interpreter.eval("onHandleMsg(__hchat_msg_info);")
+                        } finally {
+                            loaded.interpreter.unset("__hchat_msg_info")
+                        }
+                    }
+                } catch (t: Throwable) {
+                    if (!isMissingCallbackError(t, "onHandleMsg")) {
+                        h.Hchat.utils.HLog.e(TAG + " 消息监听回调失败: " + loaded.plugin.name + " " + t.message, t)
+                        bridge?.log(loaded.plugin.name, loaded.plugin.dir, "消息监听回调失败: " + t)
+                    }
                 }
             }
         }
@@ -1491,6 +1506,7 @@ object ScriptPluginRuntime {
         }
         if (forceReload) unloadPlugin(plugin.id)
         if (loadedPlugins.containsKey(plugin.id)) return Result.success(Unit)
+        var pendingWaBridge: ScriptWaBridge? = null
         return runCatching {
             val prefs = HchatStorage.preferences(context, ScriptPluginSettings.PREFS_NAME)
             if (!prefs.getBoolean(ScriptPluginSettings.KEY_ENABLE, ScriptPluginSettings.DEFAULT_ENABLE)) {
@@ -1499,7 +1515,10 @@ object ScriptPluginRuntime {
             val scriptText = runCatching { plugin.mainFile.readText(Charsets.UTF_8) }.getOrElse {
                 throw IllegalStateException("读取脚本失败: ${it.message}", it)
             }
-            val interpreter = newInterpreter(currentBridge, plugin)
+            val waBridge = ScriptWaBridge(currentBridge, delayOnMainThread = runtimeProcess == PROCESS_MAIN)
+            pendingWaBridge = waBridge
+            waBridge.bindPluginLog(plugin.name, plugin.dir)
+            val interpreter = newInterpreter(currentBridge, plugin, waBridge)
             withInterpreterLock(interpreter) {
                 interpreter.source(plugin.mainFile.absolutePath)
             }
@@ -1517,6 +1536,7 @@ object ScriptPluginRuntime {
             loadedPlugins[plugin.id] = LoadedPlugin(
                 plugin,
                 interpreter,
+                waBridge,
                 callbackFlags.hasSendButton,
                 callbackFlags.hasLongSendButton,
                 callbackFlags.hasHandleMsg,
@@ -1533,6 +1553,10 @@ object ScriptPluginRuntime {
             refreshCallbacks(plugin.id, interpreter)
             notifyPluginCatalogChanged()
         }.onFailure {
+            pendingWaBridge?.dispose()
+            loadedPlugins.remove(plugin.id)
+            if (!hasHandleMsgCallbacks()) ScriptMessageHook.clearPendingMessages()
+            updateProtobufPacketListener()
             currentBridge.unhookPlugin(plugin.id)
             h.Hchat.utils.HLog.e("$TAG 插件加载失败: ${plugin.name} ${it.message}", it)
             writePluginLoadError(plugin, it)
@@ -1544,6 +1568,8 @@ object ScriptPluginRuntime {
     private fun unloadPlugin(pluginId: String): Result<Unit> {
         cancelSnsPrepareTasks(pluginId)
         val loaded = loadedPlugins.remove(pluginId) ?: return Result.success(Unit)
+        loaded.waBridge.dispose()
+        if (!hasHandleMsgCallbacks()) ScriptMessageHook.clearPendingMessages()
         updateProtobufPacketListener()
         runCatching {
             callLifecycle(loaded.interpreter, "onUnload")
@@ -1580,12 +1606,11 @@ object ScriptPluginRuntime {
 
     private fun newInterpreter(
         currentBridge: ScriptPluginBridge,
-        plugin: ScriptPlugin
+        plugin: ScriptPlugin,
+        waBridge: ScriptWaBridge
     ): Interpreter {
         val pluginDir = plugin.dir
         val cacheDir = File(currentBridge.scriptDir.parentFile ?: currentBridge.scriptDir, "Cache")
-        val waBridge = ScriptWaBridge(currentBridge)
-        waBridge.bindPluginLog(plugin.name, pluginDir)
         val audioBridge = ScriptAudioBridge(currentBridge)
         val version = runCatching { WeChatApis.version()?.current() }.getOrNull()
             ?: runCatching {

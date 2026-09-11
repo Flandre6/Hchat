@@ -17,6 +17,7 @@ import h.Hchat.hooks.items.hotupdate.DisableHotUpdateFeature;
 import h.Hchat.hooks.items.miniprogrambaselib.FakeMiniProgramBaseLibFeature;
 import h.Hchat.hooks.items.miniprogramsplashad.SkipGlobalMiniProgramSplashAdsFeature;
 import h.Hchat.hooks.items.miniprogramvideoad.SkipMiniProgramVideoAdsFeature;
+import h.Hchat.hooks.items.floatingshortcut.FloatingShortcutRuntime;
 import h.Hchat.hooks.items.script.ScriptPluginRuntime;
 import h.Hchat.hooks.items.script.agent.ScriptPluginAgentLocalReverseTools;
 import h.Hchat.hooks.items.tablet.WeChatTabletFeature;
@@ -109,6 +110,12 @@ public class ModuleEntry implements IXposedHookLoadPackage {
                         Application app = (Application) param.thisObject;
                         if (TermsGate.INSTANCE.isAccepted(app)) {
                             CrashReportRuntime.install(app, ModuleEntry.this.getClass().getClassLoader());
+                            // 悬浮入口不依赖 DexKit，先注册生命周期，避免错过首个 Activity。
+                            try {
+                                FloatingShortcutRuntime.INSTANCE.install(app);
+                            } catch (Throwable e) {
+                                HLog.e(TAG + " 悬浮快捷菜单早期安装失败", e);
+                            }
                         }
                         installCustomBottomBarEarly(app, resolveHostClassLoader(app, lpparam));
                         new Thread(() -> initModule(app, lpparam), "Hchat-Init").start();
@@ -347,14 +354,15 @@ public class ModuleEntry implements IXposedHookLoadPackage {
             Context context = (Context) param.args[0];
             if (!TermsGate.INSTANCE.isAccepted(context)) return;
             if (!WeChatTabletFeature.isEnabled(context)) return;
+            ClassLoader resolvedClassLoader = resolveTinkerClassLoader(param.thisObject);
+            if (resolvedClassLoader == null) {
+                resolvedClassLoader = resolveHostClassLoader(context, lpparam);
+            }
+            final ClassLoader hostClassLoader = resolvedClassLoader;
+            // 缓存安装不使用 DexKit，避免主线程等待后台预热持有的串行门。
+            if (WeChatTabletFeature.installCached(context, hostClassLoader)) return;
             DexInstallScheduler.runDexKitTask(() -> {
-                ClassLoader hostClassLoader = resolveTinkerClassLoader(param.thisObject);
-                if (hostClassLoader == null) {
-                    hostClassLoader = resolveHostClassLoader(context, lpparam);
-                }
-                if (WeChatTabletFeature.installCached(context, hostClassLoader)) {
-                    return;
-                }
+                if (WeChatTabletFeature.installCached(context, hostClassLoader)) return;
                 if (!"after".equals(stage)) {
                     if (!DisableHotUpdateFeature.isEnabled(context)) return;
                     NativeLibraryLoader nativeLibraryLoader = new NativeLibraryLoader();

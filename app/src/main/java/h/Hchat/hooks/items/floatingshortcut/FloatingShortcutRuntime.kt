@@ -1,20 +1,20 @@
 package h.Hchat.hooks.items.floatingshortcut
 
 import android.app.Activity
+import android.app.Application
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.res.ColorStateList
 import android.content.res.Configuration
-import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Shader
-import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
@@ -24,6 +24,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -31,11 +32,10 @@ import android.widget.TextView
 import android.widget.Toast
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.ui.HchatAgentIconDrawable
-import h.Hchat.hooks.api.ui.WeChatLifecycleApi
 import h.Hchat.preferences.HchatStorage
+import h.Hchat.ui.SettingsUI
 import h.Hchat.ui.miuix.MiuixSettingsPage
 import h.Hchat.utils.HLog
-import java.io.File
 import java.lang.ref.WeakReference
 import kotlin.math.abs
 
@@ -58,20 +58,67 @@ object FloatingShortcutRuntime {
     private var currentBubble = WeakReference<View>(null)
     private var currentMenu = WeakReference<View>(null)
     private var currentDismissLayer = WeakReference<View>(null)
+    private var lifecycleApplication = WeakReference<Application>(null)
+    private var resumedActivity = WeakReference<Activity>(null)
+    private val pendingAttachCallbacks = mutableListOf<Runnable>()
+    @Volatile
+    private var enabledItems: List<FloatingShortcutItem> = emptyList()
+    private var pendingAction: Runnable? = null
+
+    private val activityLifecycleCallbacks = object : Application.ActivityLifecycleCallbacks {
+        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
+        override fun onActivityStarted(activity: Activity) = Unit
+
+        override fun onActivityResumed(activity: Activity) {
+            runOnMain {
+                resumedActivity = WeakReference(activity)
+                attach(activity)
+                scheduleAttachRetry(activity)
+            }
+        }
+
+        override fun onActivityPaused(activity: Activity) {
+            runOnMain {
+                if (resumedActivity.get() === activity) {
+                    resumedActivity.clear()
+                    cancelAttachRetries()
+                    cancelPendingAction()
+                }
+            }
+        }
+
+        override fun onActivityStopped(activity: Activity) = Unit
+        override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+        override fun onActivityDestroyed(activity: Activity) {
+            onActivityPaused(activity)
+            detach(activity)
+        }
+    }
 
     private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         when (key) {
             FloatingShortcutSettings.KEY_ENABLE -> refreshEnabledState()
             FloatingShortcutSettings.KEY_POSITION_X,
             FloatingShortcutSettings.KEY_POSITION_Y -> Unit
-            else -> refreshCurrentActivity()
+            else -> {
+                if (key == FloatingShortcutSettings.KEY_ITEMS || key == null) {
+                    lifecycleApplication.get()?.let { application ->
+                        enabledItems = FloatingShortcutSettings.loadItems(application).filter { it.enabled }
+                    }
+                }
+                prefetchIcons()
+                refreshCurrentActivity()
+            }
         }
     }
 
     @Synchronized
     fun install(hostContext: Context) {
         if (installed) return
-        FloatingShortcutSettings.loadItems(hostContext)
+        val application = (hostContext as? Application)
+            ?: (hostContext.applicationContext as? Application)
+            ?: return
+        enabledItems = FloatingShortcutSettings.loadItems(hostContext).filter { it.enabled }
         prefs = HchatStorage.preferences(hostContext, FloatingShortcutSettings.PREFS_NAME).also {
             it.registerOnSharedPreferenceChangeListener(preferenceListener)
             enabled = it.getBoolean(
@@ -79,7 +126,10 @@ object FloatingShortcutRuntime {
                 FloatingShortcutSettings.DEFAULT_ENABLE
             )
         }
+        application.registerActivityLifecycleCallbacks(activityLifecycleCallbacks)
+        lifecycleApplication = WeakReference(application)
         installed = true
+        if (enabled) prefetchIcons()
     }
 
     fun setEnabled(context: Context, value: Boolean) {
@@ -98,11 +148,25 @@ object FloatingShortcutRuntime {
             )
     }
 
-    fun onActivityEvent(event: WeChatLifecycleApi.ActivityEvent) {
-        when {
-            event.isResume -> attach(event.activity)
-            event.isDestroy -> detach(event.activity)
+    private fun scheduleAttachRetry(activity: Activity) {
+        cancelAttachRetries()
+        if (!installed || !enabled || !shouldShow(activity)) return
+        // 对齐 QEchat：补偿冷启动窗口尚未布局的情况；页面切走后立即取消。
+        val activityRef = WeakReference(activity)
+        for (delay in longArrayOf(0L, 80L, 250L)) {
+            val retry = Runnable {
+                val target = activityRef.get() ?: return@Runnable
+                if (!installed || !enabled || resumedActivity.get() !== target) return@Runnable
+                if (shouldShow(target)) attach(target)
+            }
+            pendingAttachCallbacks.add(retry)
+            mainHandler.postDelayed(retry, delay)
         }
+    }
+
+    private fun cancelAttachRetries() {
+        pendingAttachCallbacks.forEach(mainHandler::removeCallbacks)
+        pendingAttachCallbacks.clear()
     }
 
     fun onChatPageChanged(inChatPage: Boolean) {
@@ -116,7 +180,8 @@ object FloatingShortcutRuntime {
             }
             mainHandler.postDelayed({
                 if (!installed || !enabled || chatPageVisible) return@postDelayed
-                val activity = WeChatApis.currentActivity()?.currentActivity() ?: return@postDelayed
+                val activity = resumedActivity.get()
+                    ?: WeChatApis.currentActivity()?.currentActivity() ?: return@postDelayed
                 if (shouldShow(activity)) attach(activity)
             }, 180L)
         }
@@ -142,12 +207,19 @@ object FloatingShortcutRuntime {
 
     @Synchronized
     fun destroy() {
+        lifecycleApplication.get()?.unregisterActivityLifecycleCallbacks(activityLifecycleCallbacks)
+        lifecycleApplication.clear()
         prefs?.unregisterOnSharedPreferenceChangeListener(preferenceListener)
         prefs = null
         enabled = false
         installed = false
+        enabledItems = emptyList()
         chatPageVisible = false
         runOnMain {
+            cancelAttachRetries()
+            cancelPendingAction()
+            FloatingShortcutIconLoader.clear()
+            resumedActivity.clear()
             currentActivity.get()?.let(MiuixSettingsPage::collapseFloatingScriptPluginAgent)
             detachNow(null)
         }
@@ -163,20 +235,29 @@ object FloatingShortcutRuntime {
 
     private fun applyEnabledState(value: Boolean) {
         enabled = value
+        if (value) prefetchIcons()
         runOnMain {
             if (!value) {
+                cancelAttachRetries()
+                cancelPendingAction()
+                FloatingShortcutIconLoader.clear()
                 currentActivity.get()?.let(MiuixSettingsPage::collapseFloatingScriptPluginAgent)
                 detachNow(null)
                 return@runOnMain
             }
-            val activity = WeChatApis.currentActivity()?.currentActivity() ?: currentActivity.get()
-            if (activity != null) attach(activity)
+            val activity = resumedActivity.get()
+                ?: WeChatApis.currentActivity()?.currentActivity() ?: currentActivity.get()
+            if (activity != null) {
+                attach(activity)
+                scheduleAttachRetry(activity)
+            }
         }
     }
 
     private fun refreshCurrentActivity() {
         runOnMain {
-            val activity = WeChatApis.currentActivity()?.currentActivity() ?: currentActivity.get()
+            val activity = resumedActivity.get()
+                ?: WeChatApis.currentActivity()?.currentActivity() ?: currentActivity.get()
             val shouldReattach = activity != null && enabled && shouldShow(activity)
             val previous = currentActivity.get()
             if (previous != null && (!shouldReattach || previous !== activity)) {
@@ -211,6 +292,19 @@ object FloatingShortcutRuntime {
         val params = FrameLayout.LayoutParams(size, size, Gravity.TOP or Gravity.START)
         val positionedBeforeAttach = applyStoredPosition(activity, params, decor.width, decor.height, size, size)
         if (!positionedBeforeAttach) bubble.visibility = View.INVISIBLE
+        val positionListener = object : View.OnLayoutChangeListener {
+            override fun onLayoutChange(
+                view: View, left: Int, top: Int, right: Int, bottom: Int,
+                oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int
+            ) {
+                runOnMain {
+                    if (revealPositionedBubble(bubble, decor)) {
+                        bubble.removeOnLayoutChangeListener(this)
+                    }
+                }
+            }
+        }
+        bubble.addOnLayoutChangeListener(positionListener)
         decor.addView(
             bubble,
             params
@@ -218,15 +312,26 @@ object FloatingShortcutRuntime {
         currentActivity = WeakReference(activity)
         currentBubble = WeakReference(bubble)
         bubble.post {
-            restorePosition(bubble, decor)
-            bubble.visibility = View.VISIBLE
-            bubble.bringToFront()
+            runOnMain {
+                if (revealPositionedBubble(bubble, decor)) {
+                    bubble.removeOnLayoutChangeListener(positionListener)
+                }
+            }
         }
+    }
+
+    private fun revealPositionedBubble(bubble: View, decor: ViewGroup): Boolean {
+        if (currentBubble.get() !== bubble || bubble.parent !== decor) return false
+        if (!restorePosition(bubble, decor)) return false
+        bubble.visibility = View.VISIBLE
+        bubble.bringToFront()
+        return true
     }
 
     private fun detachNow(expectedActivity: Activity?) {
         val activity = currentActivity.get()
         if (expectedActivity != null && activity !== expectedActivity) return
+        cancelPendingAction()
         closeMenu()
         val bubble = currentBubble.get()
         (bubble?.parent as? ViewGroup)?.removeView(bubble)
@@ -262,7 +367,7 @@ object FloatingShortcutRuntime {
             clearColorFilter()
             val padding = dp(activity, (bubbleSize * 0.16f).toInt().coerceAtLeast(5))
             setPadding(padding, padding, padding, padding)
-            setImageDrawable(loadBubbleIcon(activity, contrastColor(bubbleTone)))
+            bindBubbleIcon(this, contrastColor(bubbleTone))
         }
         bubble.addView(
             icon,
@@ -284,8 +389,9 @@ object FloatingShortcutRuntime {
     }
 
     private fun showMenu(activity: Activity, decor: ViewGroup, bubble: View) {
+        cancelPendingAction()
         closeMenu()
-        val items = FloatingShortcutSettings.loadItems(activity).filter { it.enabled }
+        val items = enabledItems
         if (items.isEmpty()) {
             Toast.makeText(activity, "请先添加并启用快捷项", Toast.LENGTH_SHORT).show()
             return
@@ -294,9 +400,12 @@ object FloatingShortcutRuntime {
             FloatingShortcutSettings.KEY_DISPLAY_MODE,
             FloatingShortcutSettings.DEFAULT_DISPLAY_MODE
         ) ?: FloatingShortcutSettings.DEFAULT_DISPLAY_MODE
+        val horizontal = isHorizontalDirection()
         val list = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(activity, 4), 0, dp(activity, 4))
+            orientation = if (horizontal) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+            // Left/right remain physical directions even in an RTL host locale.
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            setPadding(dp(activity, 4), dp(activity, 4), dp(activity, 4), dp(activity, 4))
         }
         items.forEachIndexed { index, item ->
             val action = createActionView(activity, item, displayMode)
@@ -306,12 +415,25 @@ object FloatingShortcutRuntime {
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
                 ).apply {
-                    if (index > 0) topMargin = dp(activity, 5)
+                    if (index > 0) {
+                        if (horizontal) leftMargin = dp(activity, 5) else topMargin = dp(activity, 5)
+                    }
                 }
             )
         }
-        val menu = ScrollView(activity).apply {
+        val menu: FrameLayout = if (horizontal) {
+            object : HorizontalScrollView(activity) {
+                override fun shouldDelayChildPressedState(): Boolean = false
+            }
+        } else {
+            object : ScrollView(activity) {
+                override fun shouldDelayChildPressedState(): Boolean = false
+            }
+        }
+        menu.apply {
             visibility = View.INVISIBLE
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            isHorizontalScrollBarEnabled = false
             isVerticalScrollBarEnabled = false
             clipToPadding = false
             elevation = dp(activity, 10).toFloat()
@@ -347,29 +469,27 @@ object FloatingShortcutRuntime {
         currentDismissLayer = WeakReference(dismissLayer)
         currentMenu = WeakReference(menu)
         bubble.bringToFront()
-        menu.post {
-            positionMenu(activity, decor, bubble, menu, list)
-            menu.postOnAnimation {
-                if (currentMenu.get() === menu && menu.parent === decor) {
-                    val translation = menuAnimationTranslation(activity)
-                    menu.animate().cancel()
-                    menu.alpha = 0f
-                    menu.scaleX = 0.88f
-                    menu.scaleY = 0.88f
-                    menu.translationY = translation
-                    menu.visibility = View.VISIBLE
-                    menu.bringToFront()
-                    bubble.bringToFront()
-                    menu.animate()
-                        .alpha(1f)
-                        .scaleX(1f)
-                        .scaleY(1f)
-                        .translationY(0f)
-                        .setDuration(180L)
-                        .start()
-                }
-            }
-        }
+        // The visible bubble already has bounds. Place now so the next traversal shows
+        // the menu without two extra main-loop/frame callbacks.
+        positionMenu(activity, decor, bubble, menu, list)
+        val translation = menuAnimationTranslation(activity)
+        menu.animate().cancel()
+        menu.alpha = 0f
+        menu.scaleX = 0.88f
+        menu.scaleY = 0.88f
+        menu.translationX = if (horizontal) translation else 0f
+        menu.translationY = if (horizontal) 0f else translation
+        menu.visibility = View.VISIBLE
+        menu.bringToFront()
+        bubble.bringToFront()
+        menu.animate()
+            .alpha(1f)
+            .scaleX(1f)
+            .scaleY(1f)
+            .translationX(0f)
+            .translationY(0f)
+            .setDuration(180L)
+            .start()
     }
 
     private fun createActionView(
@@ -421,7 +541,7 @@ object FloatingShortcutRuntime {
                         addView(
                             ImageView(activity).apply {
                                 scaleType = ImageView.ScaleType.CENTER_INSIDE
-                                setImageDrawable(loadActionIcon(activity, item, iconColor))
+                                bindActionIcon(this, item, iconColor)
                             },
                             FrameLayout.LayoutParams(
                                 dp(activity, (actionSize * 0.57f).toInt().coerceAtLeast(20)),
@@ -437,8 +557,31 @@ object FloatingShortcutRuntime {
             }
             setOnClickListener {
                 closeMenu()
-                executeAction(activity, item)
+                dispatchAction(activity, item)
             }
+        }
+    }
+
+    private fun cancelPendingAction() {
+        pendingAction?.let(mainHandler::removeCallbacks)
+        pendingAction = null
+    }
+
+    private fun dispatchAction(activity: Activity, item: FloatingShortcutItem) {
+        if (pendingAction != null) return
+        val decor = activity.window?.decorView ?: return
+        val activityRef = WeakReference(activity)
+        val action = Runnable {
+            pendingAction = null
+            val target = activityRef.get() ?: return@Runnable
+            if (!installed || !enabled || !isUsable(target) || currentActivity.get() !== target) return@Runnable
+            executeAction(target, item)
+        }
+        pendingAction = action
+        // Render menu removal before initializing a Compose page or starting a host Activity.
+        // Posting from the frame callback runs navigation after this frame's traversal.
+        decor.postOnAnimation {
+            if (pendingAction === action) mainHandler.post(action)
         }
     }
 
@@ -446,7 +589,7 @@ object FloatingShortcutRuntime {
         val success = runCatching {
             when (item.actionType) {
                 FloatingShortcutSettings.ACTION_MODULE_SETTINGS -> {
-                    MiuixSettingsPage.show(activity)
+                    SettingsUI.show(activity)
                     true
                 }
                 FloatingShortcutSettings.ACTION_PLUGIN_AGENT -> {
@@ -485,6 +628,10 @@ object FloatingShortcutRuntime {
         val margin = dp(context, 12)
         val gap = dp(context, 10)
         val bubbleParams = bubble.layoutParams as? FrameLayout.LayoutParams ?: return
+        if (isHorizontalDirection()) {
+            positionHorizontalMenu(context, decor, bubble, bubbleParams, menu, list)
+            return
+        }
         val bubbleCenter = bubbleParams.leftMargin + bubble.width / 2
         val iconOnRight = bubbleCenter >= decor.width / 2
         orientActionViews(list, iconOnRight, context)
@@ -546,6 +693,74 @@ object FloatingShortcutRuntime {
         menu.pivotY = if (expandUp) params.height.toFloat() else 0f
     }
 
+    private fun positionHorizontalMenu(
+        context: Context,
+        decor: ViewGroup,
+        bubble: View,
+        bubbleParams: FrameLayout.LayoutParams,
+        menu: View,
+        list: LinearLayout
+    ) {
+        val margin = dp(context, 12)
+        val gap = dp(context, 10)
+        val expandLeft = expandDirection() == FloatingShortcutSettings.EXPAND_LEFT
+        val bubbleCenterY = bubbleParams.topMargin + bubble.height / 2
+        orientActionViews(list, expandLeft, context)
+        list.gravity = Gravity.CENTER_VERTICAL
+        val screenWidth = (decor.width - margin * 2).coerceAtLeast(1)
+        val maxHeight = (decor.height - margin * 2).coerceAtLeast(1)
+        list.measure(
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+            View.MeasureSpec.makeMeasureSpec(maxHeight, View.MeasureSpec.AT_MOST)
+        )
+        val widestAction = (0 until list.childCount).maxOfOrNull {
+            list.getChildAt(it).measuredWidth
+        } ?: dp(context, actionSizeDp())
+        val minimumWidth = (widestAction + list.paddingLeft + list.paddingRight)
+            .coerceAtMost((screenWidth - bubble.width - gap).coerceAtLeast(1))
+        // Keep at least one complete action accessible when opening toward a screen edge.
+        val maxBubbleLeft = (decor.width - margin - bubble.width).coerceAtLeast(margin)
+        val adjustedLeft = if (expandLeft) {
+            bubbleParams.leftMargin.coerceAtLeast(margin + minimumWidth + gap)
+        } else {
+            bubbleParams.leftMargin.coerceAtMost(decor.width - margin - bubble.width - minimumWidth - gap)
+        }.coerceIn(margin, maxBubbleLeft)
+        if (adjustedLeft != bubbleParams.leftMargin) {
+            bubbleParams.leftMargin = adjustedLeft
+            bubble.layoutParams = bubbleParams
+            persistPosition(bubble, decor)
+        }
+        val availableWidth = if (expandLeft) {
+            bubbleParams.leftMargin - gap - margin
+        } else {
+            decor.width - bubbleParams.leftMargin - bubble.width - gap - margin
+        }
+        val maxWidth = availableWidth.coerceAtLeast(minimumWidth).coerceAtMost(screenWidth)
+        menu.measure(
+            View.MeasureSpec.makeMeasureSpec(maxWidth, View.MeasureSpec.AT_MOST),
+            View.MeasureSpec.makeMeasureSpec(maxHeight, View.MeasureSpec.AT_MOST)
+        )
+        val params = menu.layoutParams as? FrameLayout.LayoutParams ?: return
+        params.width = menu.measuredWidth.coerceAtMost(maxWidth)
+        params.height = menu.measuredHeight.coerceAtMost(maxHeight)
+        val desiredLeft = if (expandLeft) {
+            bubbleParams.leftMargin - params.width - gap
+        } else {
+            bubbleParams.leftMargin + bubble.width + gap
+        }
+        params.leftMargin = desiredLeft.coerceIn(
+            margin,
+            (decor.width - params.width - margin).coerceAtLeast(margin)
+        )
+        params.topMargin = (bubbleCenterY - params.height / 2).coerceIn(
+            margin,
+            (decor.height - params.height - margin).coerceAtLeast(margin)
+        )
+        menu.layoutParams = params
+        menu.pivotX = if (expandLeft) params.width.toFloat() else 0f
+        menu.pivotY = (bubbleCenterY - params.topMargin).coerceIn(0, params.height).toFloat()
+    }
+
     private fun orientActionViews(list: LinearLayout, iconOnRight: Boolean, context: Context) {
         for (index in 0 until list.childCount) {
             val action = list.getChildAt(index) as? LinearLayout ?: continue
@@ -591,7 +806,8 @@ object FloatingShortcutRuntime {
             .alpha(0f)
             .scaleX(0.88f)
             .scaleY(0.88f)
-            .translationY(menuAnimationTranslation(menu.context))
+            .translationX(if (isHorizontalDirection()) menuAnimationTranslation(menu.context) else 0f)
+            .translationY(if (isHorizontalDirection()) 0f else menuAnimationTranslation(menu.context))
             .setDuration(140L)
             .withEndAction {
                 (menu.parent as? ViewGroup)?.removeView(menu)
@@ -635,23 +851,35 @@ object FloatingShortcutRuntime {
                         val margin = dp(view.context, 8)
                         val baseMaxTop = (decor.height - view.height - margin).coerceAtLeast(margin)
                         val openMenu = currentMenu.get()?.takeIf { it.parent === decor }
-                        val expandUp = expandDirection() == FloatingShortcutSettings.EXPAND_UP
+                        val direction = expandDirection()
+                        val expandUp = direction == FloatingShortcutSettings.EXPAND_UP
+                        val expandDown = direction == FloatingShortcutSettings.EXPAND_DOWN
+                        val baseMaxLeft = (decor.width - view.width - margin).coerceAtLeast(margin)
+                        val minLeft = if (openMenu != null && direction == FloatingShortcutSettings.EXPAND_LEFT) {
+                            (margin + openMenu.width + dp(view.context, 10)).coerceAtMost(baseMaxLeft)
+                        } else {
+                            margin
+                        }
+                        val maxLeft = if (openMenu != null && direction == FloatingShortcutSettings.EXPAND_RIGHT) {
+                            (decor.width - margin - openMenu.width - dp(view.context, 10) - view.width)
+                                .coerceAtLeast(minLeft)
+                                .coerceAtMost(baseMaxLeft)
+                        } else {
+                            baseMaxLeft
+                        }
                         val minTop = if (openMenu != null && expandUp) {
                             (margin + openMenu.height + dp(view.context, 10)).coerceAtMost(baseMaxTop)
                         } else {
                             margin
                         }
-                        val maxTop = if (openMenu != null && !expandUp) {
+                        val maxTop = if (openMenu != null && expandDown) {
                             (decor.height - margin - openMenu.height - dp(view.context, 10) - view.height)
                                 .coerceAtLeast(minTop)
                                 .coerceAtMost(baseMaxTop)
                         } else {
                             baseMaxTop
                         }
-                        params.leftMargin = (startLeft + dx.toInt()).coerceIn(
-                            margin,
-                            (decor.width - view.width - margin).coerceAtLeast(margin)
-                        )
+                        params.leftMargin = (startLeft + dx.toInt()).coerceIn(minLeft, maxLeft)
                         params.topMargin = (startTop + dy.toInt()).coerceIn(
                             minTop,
                             maxTop
@@ -712,17 +940,18 @@ object FloatingShortcutRuntime {
     }
 
     private fun repositionOpenMenu(bubble: View, decor: ViewGroup) {
-        val menu = currentMenu.get() as? ScrollView ?: return
+        val menu = currentMenu.get() as? FrameLayout ?: return
         val list = menu.getChildAt(0) as? LinearLayout ?: return
         positionMenu(bubble.context, decor, bubble, menu, list)
         menu.bringToFront()
         bubble.bringToFront()
     }
 
-    private fun restorePosition(view: View, decor: ViewGroup) {
-        val params = view.layoutParams as? FrameLayout.LayoutParams ?: return
-        if (!applyStoredPosition(view.context, params, decor.width, decor.height, view.width, view.height)) return
+    private fun restorePosition(view: View, decor: ViewGroup): Boolean {
+        val params = view.layoutParams as? FrameLayout.LayoutParams ?: return false
+        if (!applyStoredPosition(view.context, params, decor.width, decor.height, view.width, view.height)) return false
         view.layoutParams = params
+        return true
     }
 
     private fun applyStoredPosition(
@@ -770,32 +999,47 @@ object FloatingShortcutRuntime {
             ?.apply()
     }
 
-    private fun loadBubbleIcon(context: Context, tint: Int): Drawable {
-        val regularPath = prefs?.getString(FloatingShortcutSettings.KEY_BUBBLE_ICON, "").orEmpty()
-        val darkPath = prefs?.getString(FloatingShortcutSettings.KEY_BUBBLE_DARK_ICON, "").orEmpty()
-        val path = if (isDark(context) && darkPath.isNotBlank()) darkPath else regularPath
-        return loadBitmapDrawable(context, path) ?:
-            FloatingShortcutGlyphDrawable(FloatingShortcutGlyph.MENU, tint)
+    internal fun onIconFileChanged(path: String) {
+        runOnMain {
+            if (!installed || !enabled) return@runOnMain
+            val used = prefs?.getString(FloatingShortcutSettings.KEY_BUBBLE_ICON, "") == path ||
+                prefs?.getString(FloatingShortcutSettings.KEY_BUBBLE_DARK_ICON, "") == path ||
+                enabledItems.any { it.iconPath == path || it.darkIconPath == path }
+            if (used) refreshCurrentActivity()
+        }
     }
 
-    private fun loadActionIcon(context: Context, item: FloatingShortcutItem, tint: Int): Drawable? {
-        val path = if (isDark(context) && item.darkIconPath.isNotBlank()) {
+    private fun prefetchIcons() {
+        if (!enabled) return
+        FloatingShortcutIconLoader.prefetch(buildList {
+            add(prefs?.getString(FloatingShortcutSettings.KEY_BUBBLE_ICON, "").orEmpty())
+            add(prefs?.getString(FloatingShortcutSettings.KEY_BUBBLE_DARK_ICON, "").orEmpty())
+            enabledItems.forEach { item ->
+                add(item.iconPath)
+                add(item.darkIconPath)
+            }
+        })
+    }
+
+    private fun bindBubbleIcon(view: ImageView, tint: Int) {
+        val regularPath = prefs?.getString(FloatingShortcutSettings.KEY_BUBBLE_ICON, "").orEmpty()
+        val darkPath = prefs?.getString(FloatingShortcutSettings.KEY_BUBBLE_DARK_ICON, "").orEmpty()
+        val path = if (isDark(view.context) && darkPath.isNotBlank()) darkPath else regularPath
+        FloatingShortcutIconLoader.bind(view, path, FloatingShortcutGlyphDrawable(FloatingShortcutGlyph.MENU, tint))
+    }
+
+    private fun bindActionIcon(view: ImageView, item: FloatingShortcutItem, tint: Int) {
+        val path = if (isDark(view.context) && item.darkIconPath.isNotBlank()) {
             item.darkIconPath
         } else {
             item.iconPath
         }
-        loadBitmapDrawable(context, path)?.let { return it }
-        if (item.actionType == FloatingShortcutSettings.ACTION_PLUGIN_AGENT) {
-            return HchatAgentIconDrawable(tint, HchatAgentIconDrawable.Frame.CIRCLE)
+        val fallback = if (item.actionType == FloatingShortcutSettings.ACTION_PLUGIN_AGENT) {
+            HchatAgentIconDrawable(tint, HchatAgentIconDrawable.Frame.CIRCLE)
+        } else {
+            FloatingShortcutGlyphDrawable(FloatingShortcutGlyphs.forItem(item), tint)
         }
-        return FloatingShortcutGlyphDrawable(FloatingShortcutGlyphs.forItem(item), tint)
-    }
-
-    private fun loadBitmapDrawable(context: Context, path: String?): Drawable? {
-        val file = path?.takeIf { it.isNotBlank() }?.let(::File) ?: return null
-        if (!file.isFile) return null
-        val bitmap = runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull() ?: return null
-        return BitmapDrawable(context.resources, bitmap)
+        FloatingShortcutIconLoader.bind(view, path, fallback)
     }
 
     private fun ovalSurface(context: Context, colors: IntArray): Drawable {
@@ -866,12 +1110,21 @@ object FloatingShortcutRuntime {
         FloatingShortcutSettings.KEY_EXPAND_DIRECTION,
         FloatingShortcutSettings.DEFAULT_EXPAND_DIRECTION
     )?.takeIf {
-        it == FloatingShortcutSettings.EXPAND_UP || it == FloatingShortcutSettings.EXPAND_DOWN
+        it == FloatingShortcutSettings.EXPAND_UP || it == FloatingShortcutSettings.EXPAND_DOWN ||
+            it == FloatingShortcutSettings.EXPAND_LEFT || it == FloatingShortcutSettings.EXPAND_RIGHT
     } ?: FloatingShortcutSettings.DEFAULT_EXPAND_DIRECTION
+
+    private fun isHorizontalDirection(): Boolean = when (expandDirection()) {
+        FloatingShortcutSettings.EXPAND_LEFT, FloatingShortcutSettings.EXPAND_RIGHT -> true
+        else -> false
+    }
 
     private fun menuAnimationTranslation(context: Context): Float {
         val distance = dp(context, 8).toFloat()
-        return if (expandDirection() == FloatingShortcutSettings.EXPAND_UP) distance else -distance
+        return when (expandDirection()) {
+            FloatingShortcutSettings.EXPAND_UP, FloatingShortcutSettings.EXPAND_LEFT -> distance
+            else -> -distance
+        }
     }
 
     private fun bubbleColors(): IntArray = parseColorSpec(
