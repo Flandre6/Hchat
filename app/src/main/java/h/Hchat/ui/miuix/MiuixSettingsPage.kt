@@ -9310,7 +9310,15 @@ private fun MessageDetailsConfigPage(
                         onValueChange = { format = it }
                     )
                     InsetDivider()
-                    InputRow("时间格式", "例如 HH:mm:ss", timeFormat, onValueChange = { timeFormat = it })
+                    PopupChoiceRow(
+                        title = "时间显示",
+                        summary = messageDetailsTimeFormatChoices(timeFormat).first { it.value == timeFormat }.label,
+                        options = messageDetailsTimeFormatChoices(timeFormat),
+                        currentValue = timeFormat,
+                        onValueChanged = { timeFormat = it }
+                    )
+                    InsetDivider()
+                    InputRow("自定义时间格式", "yyyy 年、MM 月、dd 日；例如 yyyy-MM-dd HH:mm:ss", timeFormat, onValueChange = { timeFormat = it })
                 }
             }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "布局") }
@@ -9351,6 +9359,18 @@ private fun MessageDetailsConfigPage(
 
 private fun cleanMessageDetailsColor(value: String, fallback: String): String {
     return MemberTitleStore.cleanColor(value).ifEmpty { fallback }
+}
+
+private fun messageDetailsTimeFormatChoices(current: String): List<PopupChoice<String>> {
+    val choices = listOf(
+        PopupChoice(label = "时分秒 · 14:30:05", value = "HH:mm:ss"),
+        PopupChoice(label = "月日 时分秒 · 09-11 14:30:05", value = "MM-dd HH:mm:ss"),
+        PopupChoice(label = "年月日 时分秒 · 2026-09-11 14:30:05", value = "yyyy-MM-dd HH:mm:ss"),
+        PopupChoice(label = "中文年月日 · 2026年9月11日 14:30:05", value = "yyyy年M月d日 HH:mm:ss"),
+        PopupChoice(label = "仅年月日 · 2026-09-11", value = "yyyy-MM-dd")
+    )
+    return if (choices.any { it.value == current }) choices
+    else choices + PopupChoice(label = "自定义 · "+ current.ifBlank { "默认时分秒" }, value = current)
 }
 
 private fun messageDetailsPositionValues(): Set<String> = setOf(

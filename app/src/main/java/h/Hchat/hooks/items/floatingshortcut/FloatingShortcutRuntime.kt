@@ -8,11 +8,9 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.content.res.ColorStateList
 import android.content.res.Configuration
-import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Shader
-import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
@@ -35,9 +33,9 @@ import android.widget.Toast
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.api.ui.HchatAgentIconDrawable
 import h.Hchat.preferences.HchatStorage
+import h.Hchat.ui.SettingsUI
 import h.Hchat.ui.miuix.MiuixSettingsPage
 import h.Hchat.utils.HLog
-import java.io.File
 import java.lang.ref.WeakReference
 import kotlin.math.abs
 
@@ -63,6 +61,9 @@ object FloatingShortcutRuntime {
     private var lifecycleApplication = WeakReference<Application>(null)
     private var resumedActivity = WeakReference<Activity>(null)
     private val pendingAttachCallbacks = mutableListOf<Runnable>()
+    @Volatile
+    private var enabledItems: List<FloatingShortcutItem> = emptyList()
+    private var pendingAction: Runnable? = null
 
     private val activityLifecycleCallbacks = object : Application.ActivityLifecycleCallbacks {
         override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
@@ -81,6 +82,7 @@ object FloatingShortcutRuntime {
                 if (resumedActivity.get() === activity) {
                     resumedActivity.clear()
                     cancelAttachRetries()
+                    cancelPendingAction()
                 }
             }
         }
@@ -98,7 +100,15 @@ object FloatingShortcutRuntime {
             FloatingShortcutSettings.KEY_ENABLE -> refreshEnabledState()
             FloatingShortcutSettings.KEY_POSITION_X,
             FloatingShortcutSettings.KEY_POSITION_Y -> Unit
-            else -> refreshCurrentActivity()
+            else -> {
+                if (key == FloatingShortcutSettings.KEY_ITEMS || key == null) {
+                    lifecycleApplication.get()?.let { application ->
+                        enabledItems = FloatingShortcutSettings.loadItems(application).filter { it.enabled }
+                    }
+                }
+                prefetchIcons()
+                refreshCurrentActivity()
+            }
         }
     }
 
@@ -108,7 +118,7 @@ object FloatingShortcutRuntime {
         val application = (hostContext as? Application)
             ?: (hostContext.applicationContext as? Application)
             ?: return
-        FloatingShortcutSettings.loadItems(hostContext)
+        enabledItems = FloatingShortcutSettings.loadItems(hostContext).filter { it.enabled }
         prefs = HchatStorage.preferences(hostContext, FloatingShortcutSettings.PREFS_NAME).also {
             it.registerOnSharedPreferenceChangeListener(preferenceListener)
             enabled = it.getBoolean(
@@ -119,6 +129,7 @@ object FloatingShortcutRuntime {
         application.registerActivityLifecycleCallbacks(activityLifecycleCallbacks)
         lifecycleApplication = WeakReference(application)
         installed = true
+        if (enabled) prefetchIcons()
     }
 
     fun setEnabled(context: Context, value: Boolean) {
@@ -202,9 +213,12 @@ object FloatingShortcutRuntime {
         prefs = null
         enabled = false
         installed = false
+        enabledItems = emptyList()
         chatPageVisible = false
         runOnMain {
             cancelAttachRetries()
+            cancelPendingAction()
+            FloatingShortcutIconLoader.clear()
             resumedActivity.clear()
             currentActivity.get()?.let(MiuixSettingsPage::collapseFloatingScriptPluginAgent)
             detachNow(null)
@@ -221,9 +235,12 @@ object FloatingShortcutRuntime {
 
     private fun applyEnabledState(value: Boolean) {
         enabled = value
+        if (value) prefetchIcons()
         runOnMain {
             if (!value) {
                 cancelAttachRetries()
+                cancelPendingAction()
+                FloatingShortcutIconLoader.clear()
                 currentActivity.get()?.let(MiuixSettingsPage::collapseFloatingScriptPluginAgent)
                 detachNow(null)
                 return@runOnMain
@@ -314,6 +331,7 @@ object FloatingShortcutRuntime {
     private fun detachNow(expectedActivity: Activity?) {
         val activity = currentActivity.get()
         if (expectedActivity != null && activity !== expectedActivity) return
+        cancelPendingAction()
         closeMenu()
         val bubble = currentBubble.get()
         (bubble?.parent as? ViewGroup)?.removeView(bubble)
@@ -349,7 +367,7 @@ object FloatingShortcutRuntime {
             clearColorFilter()
             val padding = dp(activity, (bubbleSize * 0.16f).toInt().coerceAtLeast(5))
             setPadding(padding, padding, padding, padding)
-            setImageDrawable(loadBubbleIcon(activity, contrastColor(bubbleTone)))
+            bindBubbleIcon(this, contrastColor(bubbleTone))
         }
         bubble.addView(
             icon,
@@ -371,8 +389,9 @@ object FloatingShortcutRuntime {
     }
 
     private fun showMenu(activity: Activity, decor: ViewGroup, bubble: View) {
+        cancelPendingAction()
         closeMenu()
-        val items = FloatingShortcutSettings.loadItems(activity).filter { it.enabled }
+        val items = enabledItems
         if (items.isEmpty()) {
             Toast.makeText(activity, "请先添加并启用快捷项", Toast.LENGTH_SHORT).show()
             return
@@ -402,7 +421,15 @@ object FloatingShortcutRuntime {
                 }
             )
         }
-        val menu: FrameLayout = if (horizontal) HorizontalScrollView(activity) else ScrollView(activity)
+        val menu: FrameLayout = if (horizontal) {
+            object : HorizontalScrollView(activity) {
+                override fun shouldDelayChildPressedState(): Boolean = false
+            }
+        } else {
+            object : ScrollView(activity) {
+                override fun shouldDelayChildPressedState(): Boolean = false
+            }
+        }
         menu.apply {
             visibility = View.INVISIBLE
             layoutDirection = View.LAYOUT_DIRECTION_LTR
@@ -442,32 +469,27 @@ object FloatingShortcutRuntime {
         currentDismissLayer = WeakReference(dismissLayer)
         currentMenu = WeakReference(menu)
         bubble.bringToFront()
-        menu.post {
-            if (currentMenu.get() !== menu || menu.parent !== decor) return@post
-            positionMenu(activity, decor, bubble, menu, list)
-            menu.postOnAnimation {
-                if (currentMenu.get() === menu && menu.parent === decor) {
-                    val translation = menuAnimationTranslation(activity)
-                    menu.animate().cancel()
-                    menu.alpha = 0f
-                    menu.scaleX = 0.88f
-                    menu.scaleY = 0.88f
-                    menu.translationX = if (horizontal) translation else 0f
-                    menu.translationY = if (horizontal) 0f else translation
-                    menu.visibility = View.VISIBLE
-                    menu.bringToFront()
-                    bubble.bringToFront()
-                    menu.animate()
-                        .alpha(1f)
-                        .scaleX(1f)
-                        .scaleY(1f)
-                        .translationX(0f)
-                        .translationY(0f)
-                        .setDuration(180L)
-                        .start()
-                }
-            }
-        }
+        // The visible bubble already has bounds. Place now so the next traversal shows
+        // the menu without two extra main-loop/frame callbacks.
+        positionMenu(activity, decor, bubble, menu, list)
+        val translation = menuAnimationTranslation(activity)
+        menu.animate().cancel()
+        menu.alpha = 0f
+        menu.scaleX = 0.88f
+        menu.scaleY = 0.88f
+        menu.translationX = if (horizontal) translation else 0f
+        menu.translationY = if (horizontal) 0f else translation
+        menu.visibility = View.VISIBLE
+        menu.bringToFront()
+        bubble.bringToFront()
+        menu.animate()
+            .alpha(1f)
+            .scaleX(1f)
+            .scaleY(1f)
+            .translationX(0f)
+            .translationY(0f)
+            .setDuration(180L)
+            .start()
     }
 
     private fun createActionView(
@@ -519,7 +541,7 @@ object FloatingShortcutRuntime {
                         addView(
                             ImageView(activity).apply {
                                 scaleType = ImageView.ScaleType.CENTER_INSIDE
-                                setImageDrawable(loadActionIcon(activity, item, iconColor))
+                                bindActionIcon(this, item, iconColor)
                             },
                             FrameLayout.LayoutParams(
                                 dp(activity, (actionSize * 0.57f).toInt().coerceAtLeast(20)),
@@ -535,8 +557,31 @@ object FloatingShortcutRuntime {
             }
             setOnClickListener {
                 closeMenu()
-                executeAction(activity, item)
+                dispatchAction(activity, item)
             }
+        }
+    }
+
+    private fun cancelPendingAction() {
+        pendingAction?.let(mainHandler::removeCallbacks)
+        pendingAction = null
+    }
+
+    private fun dispatchAction(activity: Activity, item: FloatingShortcutItem) {
+        if (pendingAction != null) return
+        val decor = activity.window?.decorView ?: return
+        val activityRef = WeakReference(activity)
+        val action = Runnable {
+            pendingAction = null
+            val target = activityRef.get() ?: return@Runnable
+            if (!installed || !enabled || !isUsable(target) || currentActivity.get() !== target) return@Runnable
+            executeAction(target, item)
+        }
+        pendingAction = action
+        // Render menu removal before initializing a Compose page or starting a host Activity.
+        // Posting from the frame callback runs navigation after this frame's traversal.
+        decor.postOnAnimation {
+            if (pendingAction === action) mainHandler.post(action)
         }
     }
 
@@ -544,7 +589,7 @@ object FloatingShortcutRuntime {
         val success = runCatching {
             when (item.actionType) {
                 FloatingShortcutSettings.ACTION_MODULE_SETTINGS -> {
-                    MiuixSettingsPage.show(activity)
+                    SettingsUI.show(activity)
                     true
                 }
                 FloatingShortcutSettings.ACTION_PLUGIN_AGENT -> {
@@ -954,32 +999,47 @@ object FloatingShortcutRuntime {
             ?.apply()
     }
 
-    private fun loadBubbleIcon(context: Context, tint: Int): Drawable {
-        val regularPath = prefs?.getString(FloatingShortcutSettings.KEY_BUBBLE_ICON, "").orEmpty()
-        val darkPath = prefs?.getString(FloatingShortcutSettings.KEY_BUBBLE_DARK_ICON, "").orEmpty()
-        val path = if (isDark(context) && darkPath.isNotBlank()) darkPath else regularPath
-        return loadBitmapDrawable(context, path) ?:
-            FloatingShortcutGlyphDrawable(FloatingShortcutGlyph.MENU, tint)
+    internal fun onIconFileChanged(path: String) {
+        runOnMain {
+            if (!installed || !enabled) return@runOnMain
+            val used = prefs?.getString(FloatingShortcutSettings.KEY_BUBBLE_ICON, "") == path ||
+                prefs?.getString(FloatingShortcutSettings.KEY_BUBBLE_DARK_ICON, "") == path ||
+                enabledItems.any { it.iconPath == path || it.darkIconPath == path }
+            if (used) refreshCurrentActivity()
+        }
     }
 
-    private fun loadActionIcon(context: Context, item: FloatingShortcutItem, tint: Int): Drawable? {
-        val path = if (isDark(context) && item.darkIconPath.isNotBlank()) {
+    private fun prefetchIcons() {
+        if (!enabled) return
+        FloatingShortcutIconLoader.prefetch(buildList {
+            add(prefs?.getString(FloatingShortcutSettings.KEY_BUBBLE_ICON, "").orEmpty())
+            add(prefs?.getString(FloatingShortcutSettings.KEY_BUBBLE_DARK_ICON, "").orEmpty())
+            enabledItems.forEach { item ->
+                add(item.iconPath)
+                add(item.darkIconPath)
+            }
+        })
+    }
+
+    private fun bindBubbleIcon(view: ImageView, tint: Int) {
+        val regularPath = prefs?.getString(FloatingShortcutSettings.KEY_BUBBLE_ICON, "").orEmpty()
+        val darkPath = prefs?.getString(FloatingShortcutSettings.KEY_BUBBLE_DARK_ICON, "").orEmpty()
+        val path = if (isDark(view.context) && darkPath.isNotBlank()) darkPath else regularPath
+        FloatingShortcutIconLoader.bind(view, path, FloatingShortcutGlyphDrawable(FloatingShortcutGlyph.MENU, tint))
+    }
+
+    private fun bindActionIcon(view: ImageView, item: FloatingShortcutItem, tint: Int) {
+        val path = if (isDark(view.context) && item.darkIconPath.isNotBlank()) {
             item.darkIconPath
         } else {
             item.iconPath
         }
-        loadBitmapDrawable(context, path)?.let { return it }
-        if (item.actionType == FloatingShortcutSettings.ACTION_PLUGIN_AGENT) {
-            return HchatAgentIconDrawable(tint, HchatAgentIconDrawable.Frame.CIRCLE)
+        val fallback = if (item.actionType == FloatingShortcutSettings.ACTION_PLUGIN_AGENT) {
+            HchatAgentIconDrawable(tint, HchatAgentIconDrawable.Frame.CIRCLE)
+        } else {
+            FloatingShortcutGlyphDrawable(FloatingShortcutGlyphs.forItem(item), tint)
         }
-        return FloatingShortcutGlyphDrawable(FloatingShortcutGlyphs.forItem(item), tint)
-    }
-
-    private fun loadBitmapDrawable(context: Context, path: String?): Drawable? {
-        val file = path?.takeIf { it.isNotBlank() }?.let(::File) ?: return null
-        if (!file.isFile) return null
-        val bitmap = runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull() ?: return null
-        return BitmapDrawable(context.resources, bitmap)
+        FloatingShortcutIconLoader.bind(view, path, fallback)
     }
 
     private fun ovalSurface(context: Context, colors: IntArray): Drawable {
