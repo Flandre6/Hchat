@@ -52,6 +52,7 @@ class AutoTransferFeature : BaseFeature() {
                 } else {
                     trackSubscription(observer.subscribe { message -> handleMessage(context, message) })
                     observerInstalled = true
+                    logInfo("消息观察订阅已安装")
                     return@schedule true
                 }
             } catch (e: Throwable) {
@@ -76,6 +77,7 @@ class AutoTransferFeature : BaseFeature() {
         if (info == null) {
             return
         }
+        logInfo("检测到待处理转账: source=${message.source}")
         if (!info.pending) {
             return
         }

@@ -66,6 +66,7 @@ object ScriptPluginRuntime {
     private const val INITIAL_LOAD_POLL_MAX_MS = 2_000L
     private const val SEND_BUTTON_SLOW_CALLBACK_MS = 50L
     private const val SEND_BUTTON_DIAGNOSTIC_LOG_COOLDOWN_MS = 10_000L
+    private const val SCRIPT_HOOK_BUSY_LOG_COOLDOWN_MS = 10_000L
     private const val PROTOBUF_CALLBACK_QUEUE_CAPACITY = 128
     private const val PROTOBUF_DROP_LOG_COOLDOWN_MS = 10_000L
     private const val IMAGE_DOWNLOAD_CALLBACK_QUEUE_CAPACITY = 32
@@ -107,6 +108,7 @@ object ScriptPluginRuntime {
     private val reloadTasks = ConcurrentHashMap<String, Runnable>()
     private val interpreterLocks = WeakHashMap<Interpreter, ReentrantLock>()
     private val sendButtonDiagnosticLogAt = ConcurrentHashMap<String, Long>()
+    private val scriptHookBusyLogAt = ConcurrentHashMap<String, Long>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val protobufListenerLock = Any()
     private val protobufListenerRegistered = AtomicBoolean(false)
@@ -1543,6 +1545,7 @@ object ScriptPluginRuntime {
     @Synchronized
     private fun unloadPlugin(pluginId: String): Result<Unit> {
         cancelSnsPrepareTasks(pluginId)
+        scriptHookBusyLogAt.keys.removeIf { it.startsWith("$pluginId:") }
         val loaded = loadedPlugins.remove(pluginId) ?: return Result.success(Unit)
         updateProtobufPacketListener()
         runCatching {
@@ -2085,6 +2088,56 @@ object ScriptPluginRuntime {
         return synchronized(interpreterLocks) {
             interpreterLocks.getOrPut(interpreter) { ReentrantLock() }
         }
+    }
+
+    /**
+     * Script-defined Xposed hooks can run concurrently with lifecycle and event callbacks.
+     * BeanShell serializes method invocation internally, so a network-bound callback can make
+     * the host UI thread wait on a MethodInvocable monitor. Hook callbacks must therefore use
+     * the same interpreter lock, but never wait for it: skipping a busy script hook lets the
+     * original host method continue and avoids an input-dispatch ANR.
+     */
+    internal fun tryInvokeScriptHook(
+        pluginId: String?,
+        hookType: String,
+        target: Any?,
+        callback: () -> Unit
+    ): Boolean {
+        val normalizedId = pluginId?.takeIf { it.isNotBlank() }
+        if (normalizedId == null) {
+            callback()
+            return true
+        }
+        val loaded = loadedPlugins[normalizedId]
+        if (loaded == null) {
+            // Hooks registered during onLoad can fire before the plugin is published.
+            callback()
+            return true
+        }
+        val lock = interpreterLock(loaded.interpreter)
+        if (!lock.tryLock()) {
+            logBusyScriptHook(loaded, hookType, target)
+            return false
+        }
+        return try {
+            callback()
+            true
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    private fun logBusyScriptHook(loaded: LoadedPlugin, hookType: String, target: Any?) {
+        val key = "${loaded.plugin.id}:$hookType"
+        val now = SystemClock.elapsedRealtime()
+        val previous = scriptHookBusyLogAt[key]
+        if (previous != null && now - previous < SCRIPT_HOOK_BUSY_LOG_COOLDOWN_MS) return
+        if (previous != null && !scriptHookBusyLogAt.replace(key, previous, now)) return
+        if (previous == null && scriptHookBusyLogAt.putIfAbsent(key, now) != null) return
+        h.Hchat.utils.HLog.e(
+            "$TAG 脚本 Hook 忙碌，已跳过回调: ${loaded.plugin.name}#$hookType " +
+                target?.toString().orEmpty()
+        )
     }
 
     private inline fun <T> withInterpreterLock(interpreter: Interpreter, block: () -> T): T {

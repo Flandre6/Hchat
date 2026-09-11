@@ -194,7 +194,9 @@ public class RedPacketHooker {
                 || text.contains("失败")
                 || text.contains("未找到")
                 || text.contains("不可用")
-                || text.contains("无合适方法");
+                || text.contains("无合适方法")
+                || text.contains("红包检测入口")
+                || text.contains("数据库兜底Hook");
     }
 
     private boolean getBoolean(String key, boolean def) {
