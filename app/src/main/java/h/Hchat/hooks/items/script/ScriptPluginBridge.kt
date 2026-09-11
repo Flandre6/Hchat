@@ -515,6 +515,10 @@ class ScriptPluginBridge internal constructor(
     fun unhook(unhook: XC_MethodHook.Unhook?) {
         unhook?.unhook()
         HookRegistry.get().remove(unhook)
+        HookRegistry.get().unhook(unhook)
+        if (unhook != null) {
+            pluginHooks.values.forEach { it.remove(unhook) }
+        }
     }
 
     fun unhook(pluginId: String?, unhook: XC_MethodHook.Unhook?) {
@@ -530,15 +534,24 @@ class ScriptPluginBridge internal constructor(
 
     fun unhookPlugin(pluginId: String?) {
         if (pluginId.isNullOrBlank()) return
-        ScriptMenuDispatcher.unregisterOwner(pluginId)
+        runCatching { ScriptMenuDispatcher.unregisterOwner(pluginId) }.onFailure {
+            h.Hchat.utils.HLog.e("[Hchat:Script] 清理插件菜单失败: $pluginId", it)
+        }
         pluginFloatingBars.remove(pluginId)?.let { handles ->
-            callOnMainForResult {
-                handles.forEach { handle -> handle.restore() }
-                true
+            runCatching {
+                callOnMainForResult {
+                    handles.forEach { handle -> handle.restore() }
+                    true
+                }
+            }.onFailure {
+                h.Hchat.utils.HLog.e("[Hchat:Script] 恢复插件悬浮栏失败: $pluginId", it)
             }
         }
         for (hook in pluginHooks.remove(pluginId).orEmpty()) {
             runCatching { unhook(hook) }
+            runCatching { HookRegistry.get().unhook(hook) }.onFailure {
+                h.Hchat.utils.HLog.e("[Hchat:Script] 解除插件 Hook 失败: $pluginId", it)
+            }
         }
     }
 

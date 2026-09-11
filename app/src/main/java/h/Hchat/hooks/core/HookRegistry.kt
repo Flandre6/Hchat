@@ -30,6 +30,11 @@ class HookRegistry private constructor() {
     /** 从全局登记表移除已由功能自身卸载的句柄，避免反复热重载时列表只增不减。 */
     fun remove(unhook: XC_MethodHook.Unhook?) {
         if (unhook != null) unhooks.remove(unhook)
+    fun unhook(unhook: XC_MethodHook.Unhook?) {
+        if (unhook == null) return
+        unhook.unhook()
+        // Xposed 解除回调后，还必须释放模块注册表持有的句柄及脚本解释器。
+        unhooks.remove(unhook)
     }
 
     fun unhookAll() {

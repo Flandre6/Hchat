@@ -29,6 +29,8 @@ object FloatingShortcutIconStore {
                 temporary.copyTo(target, overwrite = true)
                 temporary.delete()
             }
+            FloatingShortcutIconLoader.invalidate(target.absolutePath)
+            FloatingShortcutRuntime.onIconFileChanged(target.absolutePath)
             target.absolutePath
         } catch (_: Throwable) {
             temporary.delete()
@@ -42,7 +44,11 @@ object FloatingShortcutIconStore {
         val file = path?.takeIf { it.isNotBlank() }?.let(::File) ?: return
         val root = runCatching { iconDirectory(context).canonicalFile }.getOrNull() ?: return
         val target = runCatching { file.canonicalFile }.getOrNull() ?: return
-        if (target.parentFile == root) runCatching { target.delete() }
+        if (target.parentFile == root) {
+            runCatching { target.delete() }
+            FloatingShortcutIconLoader.invalidate(target.absolutePath)
+            FloatingShortcutRuntime.onIconFileChanged(target.absolutePath)
+        }
     }
 
     private fun decodeSampled(context: Context, uri: Uri): Bitmap? {

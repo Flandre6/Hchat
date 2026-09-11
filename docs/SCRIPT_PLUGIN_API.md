@@ -1715,6 +1715,7 @@ void downloadFinderMedia(Object finderFeedOrMessage, int mediaIndex, String save
 - 如果 `main.java` 只是入口包装，真正的回调定义在 `eval(String code)`、`evalSnapshot()` 或 `loadJava()` 加载的文件里，模块会在执行后刷新并识别这些回调；入口顶层异步加载时也会在插件登记后补充扫描，避免回调因加载时序丢失。
 - 如果加载进来的方法不是标准回调名，可以在顶层用 `useCallback(...)` 或 `useOnHandleMsg(...)` 这类别名接口绑定。
 - `loadJava` 支持绝对路径；相对路径从当前插件目录开始找。
+- `delay()` 按每次插件加载实例管理。实例卸载、重载或加载失败会取消尚未开始的任务，并阻止旧实例继续排队；已经执行的回调不能强制终止。主进程回调在主线程，小程序回调在共享的两个后台调度线程执行。每实例最多等待 128 项、每进程最多等待 512 项，超限跳过新任务并限频记录错误；插件间的延迟任务互不覆盖。小程序进程的启用状态仍按本文前述规则，在该进程重新启动时应用。
 - `loadDex` 会先把 dex/jar/apk 复制到微信私有 `code_cache` 并设为只读后加载，返回的 `ClassLoader` 也会加入当前 BeanShell 解释器。
 - `loadSo` 会校验 ELF、进程位数和 ARM 架构，再按内容哈希复制到微信私有 `code_cache/hchat_plugin_native/<pluginId>/`，设为只读后加载。SO 必须匹配当前微信进程的 `arm64-v8a` 或 `armeabi-v7a` ABI。
 - 不要在脚本顶层声明 `native void method();`。BeanShell 顶层函数不是 Java 类成员，无法匹配 JNI 类名。可以在脚本内声明包含 `native` 方法的类，并把 `NativeClass.class.getClassLoader()` 传给 `loadSo`；也可以使用 `loadDex` 加载编译好的 JNI 包装类。类全名和方法名必须与 SO 导出的 JNI 符号或 `RegisterNatives` 目标一致。
@@ -1990,6 +1991,7 @@ startTransform(7, pluginDir + "/a.mp3", cacheDir + "/a.aac", 44100, new java.uti
 BeanShell 入口共用解释器锁；如果插件正在执行消息、生命周期或其它脚本回调，新的 Hook 回调不会
 等待锁，而是跳过该插件并继续宿主原方法，同时把插件名、Hook 类型和目标成员写入限频日志。这样可
 避免脚本里的同步网络操作阻塞微信主线程；Hook 回调应自行避免耗时工作。
+通过这些接口注册的 Hook 会在插件关闭、重载或加载失败时自动清理，并同步从模块全局 Hook 注册表释放句柄。插件自行保存的句柄、对象以及直接调用 Xposed API 注册的 Hook 仍需插件自行管理。
 
 示例：
 
@@ -2116,6 +2118,7 @@ void onMemberChange(String type, String groupWxid, String userWxid, String userN
 - 插件代码有错误时，插件会加载失败并自动关闭。
 - 加载失败原因会写入当前插件目录的 `log.txt`。
 - 不要在 `onClickSendBtn` 或 `onLongClickSendBtn` 里做耗时操作，否则发送按钮交互会变慢。
+- `onHandleMsg` 使用单线程顺序分发，最多等待 128 条消息。慢插件导致队列满时，跳过新到的脚本回调并每 10 秒最多记录一次累计丢弃数，不影响微信消息本身。没有消息消费者时跳过消息包装和去重；卸载最后一个消费者会清空待执行队列。排队消息只交给入队时仍存活的插件实例，不转交重载后的新实例。
 - 模块会分别记录超过 `50ms` 的单击/长按发送按钮回调和因解释器忙碌而跳过的插件名；同类日志会限频。
 - 网络请求请使用 `get/post/download` 的回调处理结果。
 - 文件路径建议使用 `pluginDir` 或 `cacheDir`。

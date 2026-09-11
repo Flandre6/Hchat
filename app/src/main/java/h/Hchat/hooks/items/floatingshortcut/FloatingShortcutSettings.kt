@@ -47,6 +47,8 @@ object FloatingShortcutSettings {
     const val DISPLAY_BOTH = "both"
     const val EXPAND_UP = "up"
     const val EXPAND_DOWN = "down"
+    const val EXPAND_LEFT = "left"
+    const val EXPAND_RIGHT = "right"
     const val ACTION_ACTIVITY = "activity"
     const val ACTION_MODULE_SETTINGS = "module_settings"
     const val ACTION_PLUGIN_AGENT = "plugin_agent"

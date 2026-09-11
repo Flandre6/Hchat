@@ -42,8 +42,9 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.function.Consumer
 import java.util.regex.Pattern
 
-class ScriptWaBridge internal constructor(
-    private val bridge: ScriptPluginBridge
+class ScriptWaBridge @JvmOverloads internal constructor(
+    private val bridge: ScriptPluginBridge,
+    delayOnMainThread: Boolean = true
 ) {
     private var currentPluginName: String? = null
     private var currentPluginDir: File? = null
@@ -51,6 +52,8 @@ class ScriptWaBridge internal constructor(
     private val callbackSeq = AtomicLong(1L)
     private val httpClients = Collections.synchronizedMap(LinkedHashMap<Long, OkHttpClient>())
     private val durationCodec: SilkCodec by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { SilkCodec() }
+
+    private val delays = ScriptDelayScope(delayOnMainThread) { currentPluginName.orEmpty() }
 
     private companion object {
         const val SCRIPT_CONTACT_READ_ATTEMPTS = 5
@@ -944,27 +947,9 @@ class ScriptWaBridge internal constructor(
         return WeChatApis.message().conversations()?.getTotalUnreadCount() == 0
     }
 
-    fun delay(millis: Long, action: Runnable?) {
-        if (action == null) return
-        val wrapped = Runnable {
-            runCatching {
-                action.run()
-            }.onFailure {
-                h.Hchat.utils.HLog.e("[Hchat:Script] 延迟任务失败: ${it.message}", it)
-                bridge.log("延迟任务失败: ${it.message}")
-            }
-        }
-        WeChatApis.runtime().tasks()?.runOnMainDelayed(
-            "script_delay_${callbackSeq.getAndIncrement()}",
-            millis,
-            wrapped
-        ) ?: Thread({
-            runCatching {
-                Thread.sleep(millis.coerceAtLeast(0L))
-                wrapped.run()
-            }.onFailure { bridge.log("延迟任务失败: ${it.message}") }
-        }, "script_delay_${callbackSeq.getAndIncrement()}").start()
-    }
+    fun delay(millis: Long, action: Runnable?) = delays.delay(millis, action)
+
+    internal fun dispose() = delays.dispose()
 
     fun notify(title: String?, text: String?) {
         WeChatApis.interaction().notifier()?.sendNotice(
