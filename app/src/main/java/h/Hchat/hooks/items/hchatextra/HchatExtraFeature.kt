@@ -20,7 +20,6 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.view.ViewTreeObserver
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.RelativeLayout
@@ -94,6 +93,12 @@ class HchatExtraFeature : BaseFeature() {
         DexInstallScheduler.schedule(ID, name()) {
             hooker?.install() == true
         }
+        DexInstallScheduler.schedule("hchat_extra_message_details", "消息显示时间") {
+            hooker?.installMessageDetails() == true
+        }
+        DexInstallScheduler.schedule("hchat_extra_forwarded_types", "聊天记录消息类型") {
+            hooker?.installForwardedRecordTypes() == true
+        }
     }
 
     companion object {
@@ -114,7 +119,9 @@ private class HchatExtraHooker(
     )
 
     private data class MessageDetailsBindState(
-        val holder: Any?
+        val holder: Any?,
+        val root: View? = null,
+        var message: Any? = null
     )
 
     private data class AvatarDetailsAnchor(
@@ -173,11 +180,6 @@ private class HchatExtraHooker(
         val fallbackField: Field?
     )
 
-    private data class PendingPreDraw(
-        val observer: ViewTreeObserver,
-        val listener: ViewTreeObserver.OnPreDrawListener
-    )
-
     private enum class AvatarPositionResult {
         STABLE,
         NEEDS_LAYOUT,
@@ -201,6 +203,7 @@ private class HchatExtraHooker(
     private val holderMainContainerMethodCache = ConcurrentHashMap<Class<*>, Method>()
     private val holderWithoutMainContainerMethod = ConcurrentHashMap.newKeySet<Class<*>>()
     private val holderContentFieldCache = ConcurrentHashMap<Class<*>, List<Field>>()
+    private val noticeContentIds = ConcurrentHashMap<String, Int>()
     private val messageAccessorCache = ConcurrentHashMap<MessageAccessorKey, MessageAccessor>()
     private val nativeMessageClassCache = ConcurrentHashMap<Class<*>, Boolean>()
     private val messageNestedFieldCache = ConcurrentHashMap<Class<*>, List<Field>>()
@@ -208,10 +211,13 @@ private class HchatExtraHooker(
     private val messageDetailsLabels = Collections.newSetFromMap(WeakHashMap<TextView, Boolean>())
     private val messageDetailsBindings = WeakHashMap<TextView, MessageDetailsBinding>()
     private val avatarDetailsSpacings = WeakHashMap<RelativeLayout, AvatarDetailsSpacing>()
-    private val messageDetailsRetryListeners = WeakHashMap<View, PendingPreDraw>()
-    private val messageDetailsPositionListeners = WeakHashMap<View, PendingPreDraw>()
-    private val messageDetailsColorListeners = WeakHashMap<View, PendingPreDraw>()
+    private val messageDetailsAttachCallbacks = MessageDetailsAttachQueue()
+    private val messageDetailsLayoutCallbacks = MessageDetailsLayoutObserver()
+    private val messageDetailsRetryListeners = MessageDetailsPreDrawQueue()
+    private val messageDetailsPositionListeners = MessageDetailsPreDrawQueue()
+    private val messageDetailsColorListeners = MessageDetailsPreDrawQueue()
     private val messageDetailsBindStates = ThreadLocal<ArrayDeque<MessageDetailsBindState>>()
+    private val messageDetailsBindTokens = WeakHashMap<View, Any>()
     @Volatile private var messageDetailsConfig = readMessageDetailsConfig()
     @Volatile private var hideSelfAvatar = hideAvatarPrefs.getBoolean(
         HideChatAvatarSettings.KEY_HIDE_SELF,
@@ -221,9 +227,16 @@ private class HchatExtraHooker(
         HideChatAvatarSettings.KEY_HIDE_OTHER,
         HideChatAvatarSettings.DEFAULT_HIDE_OTHER
     )
+    private val forwardedRecordTypes = ForwardedRecordTypeLabels(
+        context,
+        enabled = { messageDetailsConfig.enabled && "type" in messageDetailsConfig.tokens },
+        styleLabel = ::applyForwardedRecordLabel,
+        logger = logger
+    )
     private val messageDetailsPrefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key in MESSAGE_DETAILS_CONFIG_KEYS) {
             messageDetailsConfig = readMessageDetailsConfig()
+            forwardedRecordTypes.refresh()
         }
         when {
             key in MESSAGE_DETAILS_COLOR_KEYS -> refreshAttachedMessageDetailsLabels()
@@ -351,48 +364,8 @@ private class HchatExtraHooker(
         )
     }
 
-    private fun schedulePreDraw(
-        key: View,
-        observedView: View,
-        registry: WeakHashMap<View, PendingPreDraw>,
-        action: () -> Unit
-    ): Boolean {
-        cancelPendingPreDraw(key, registry)
-        val observer = observedView.viewTreeObserver
-        if (!observer.isAlive) return false
-        lateinit var listener: ViewTreeObserver.OnPreDrawListener
-        listener = ViewTreeObserver.OnPreDrawListener {
-            if (observer.isAlive) observer.removeOnPreDrawListener(listener)
-            synchronized(registry) {
-                if (registry[key]?.listener === listener) registry.remove(key)
-            }
-            action()
-            true
-        }
-        synchronized(registry) {
-            registry[key] = PendingPreDraw(observer, listener)
-        }
-        observer.addOnPreDrawListener(listener)
-        return true
-    }
-
-    private fun cancelPendingPreDraw(key: View, registry: WeakHashMap<View, PendingPreDraw>) {
-        val pending = synchronized(registry) { registry.remove(key) } ?: return
-        if (pending.observer.isAlive) {
-            pending.observer.removeOnPreDrawListener(pending.listener)
-        }
-    }
-
-    private fun clearPendingPreDrawListeners(registry: WeakHashMap<View, PendingPreDraw>) {
-        val pending = synchronized(registry) {
-            registry.values.toList().also { registry.clear() }
-        }
-        pending.forEach {
-            if (it.observer.isAlive) it.observer.removeOnPreDrawListener(it.listener)
-        }
-    }
-
     fun destroy() {
+        forwardedRecordTypes.destroy()
         prefs.unregisterOnSharedPreferenceChangeListener(messageDetailsPrefsListener)
         hideAvatarPrefs.unregisterOnSharedPreferenceChangeListener(hideAvatarPrefsListener)
         val spacings = synchronized(avatarDetailsSpacings) {
@@ -405,10 +378,15 @@ private class HchatExtraHooker(
         synchronized(messageDetailsBindings) {
             messageDetailsBindings.clear()
         }
-        clearPendingPreDrawListeners(messageDetailsRetryListeners)
-        clearPendingPreDrawListeners(messageDetailsPositionListeners)
-        clearPendingPreDrawListeners(messageDetailsColorListeners)
+        messageDetailsAttachCallbacks.clear()
+        messageDetailsLayoutCallbacks.clear()
+        messageDetailsRetryListeners.clear()
+        messageDetailsPositionListeners.clear()
+        messageDetailsColorListeners.clear()
+        synchronized(messageDetailsBindTokens) { messageDetailsBindTokens.clear() }
     }
+
+    fun installForwardedRecordTypes(): Boolean = forwardedRecordTypes.install()
 
     fun install(): Boolean {
         var hooked = 0
@@ -416,7 +394,6 @@ private class HchatExtraHooker(
             if (installSkipWebRisk()) hooked++
             if (installRedPacketDetails()) hooked++
             if (installGroupMemberHistory()) hooked++
-            if (installMessageDetails()) hooked++
         }.onFailure {
             logger("Hchat扩展功能安装异常", it)
         }
@@ -559,45 +536,70 @@ private class HchatExtraHooker(
         return hooked
     }
 
-    private fun installMessageDetails(): Boolean {
-        val bind = locateMessageViewBindMethod() ?: return false
-        if (!hookedMethods.add(bind)) return true
-        return runCatching {
-            HookRegistry.get().hook(bind, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val state = runCatching { captureMessageDetailsBindState(param.args) }
-                        .getOrElse {
-                            logger("消息显示时间绑定前状态读取失败", it)
-                            MessageDetailsBindState(null)
-                        }
-                    val stack = messageDetailsBindStates.get()
-                        ?: ArrayDeque<MessageDetailsBindState>().also(messageDetailsBindStates::set)
-                    stack.addLast(state)
-                }
+    fun installMessageDetails(): Boolean {
+        val itemBind = locateMessageViewBindMethod()
+        val adapterBinds = locateChattingAdapterBindMethods()
+        val adapterClass = locateChattingDataAdapterClass()
+        val binds = (listOfNotNull(itemBind) + adapterBinds).distinct()
+        var complete = itemBind != null && adapterClass != null &&
+            adapterBinds.any { it.parameterTypes.size == 2 } && adapterBinds.any { it.parameterTypes.size == 3 }
+        for (bind in binds) {
+            if (!hookedMethods.add(bind)) continue
+            val installed = runCatching {
+                HookRegistry.get().hook(bind, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        // The payload method belongs to a shared base adapter. Only chat rows apply.
+                        if (bind in adapterBinds && adapterClass?.isInstance(param.thisObject) != true) return
+                        val state = runCatching { captureMessageDetailsBindState(param.args) }
+                            .getOrElse {
+                                logger("消息显示时间绑定前状态读取失败", it)
+                                MessageDetailsBindState(null)
+                            }
+                        val stack = messageDetailsBindStates.get()
+                            ?: ArrayDeque<MessageDetailsBindState>().also(messageDetailsBindStates::set)
+                        stack.addLast(state)
+                    }
 
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val stack = messageDetailsBindStates.get()
-                    val state = stack?.pollLast() ?: MessageDetailsBindState(null)
-                    if (stack?.isEmpty() == true) messageDetailsBindStates.remove()
-                    if (!messageDetailsConfig.enabled) return
-                    runCatching {
-                        bindBottomMessageDetails(param.thisObject, param.args, 0, state.holder)
-                    }.onFailure { logger("消息显示时间绑定失败", it) }
-                }
-            })
-            true
-        }.getOrElse {
-            hookedMethods.remove(bind)
-            logger("消息显示时间Hook安装失败: ${bind.name}", it)
-            false
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        if (bind in adapterBinds && adapterClass?.isInstance(param.thisObject) != true) return
+                        val stack = messageDetailsBindStates.get()
+                        val state = stack?.pollLast() ?: MessageDetailsBindState(null)
+                        val outer = stack?.lastOrNull { state.root != null && it.root === state.root }
+                        if (outer != null && state.message != null) outer.message = state.message
+                        if (stack?.isEmpty() == true) messageDetailsBindStates.remove()
+                        if (outer != null || !messageDetailsConfig.enabled || param.hasThrowable()) return
+                        runCatching {
+                            bindBottomMessageDetails(param.thisObject, param.args, 0, state.holder, state.message)
+                        }.onFailure { logger("消息显示时间绑定失败", it) }
+                    }
+                })
+                true
+            }.getOrElse {
+                hookedMethods.remove(bind)
+                logger("消息显示时间Hook安装失败: $bind", it)
+                false
+            }
+            complete = installed && complete
         }
+        return complete
     }
 
     private fun captureMessageDetailsBindState(args: Array<Any?>?): MessageDetailsBindState {
         val adapterHolder = messageBindHolder(args) ?: return MessageDetailsBindState(null)
-        val root = findRootView(adapterHolder) ?: return MessageDetailsBindState(null)
-        val holder = root.tag?.takeIf { isMessageDetailsHolder(it, root) }
-        return MessageDetailsBindState(holder)
+        val holderRoot = findRootView(adapterHolder) ?: return MessageDetailsBindState(null)
+        if (isScrollingContainer(holderRoot)) return MessageDetailsBindState(null)
+        val root = messageRowRoot(holderRoot)
+        val holder = holderRoot.tag?.takeIf { isMessageDetailsHolder(it, root) }
+        val state = MessageDetailsBindState(holder, root, resolveMessageFromBindArgs(args))
+        // A full/payload adapter bind invokes the item hook synchronously. Clean each row
+        // once and mount from its outermost hook after all native mutations finish.
+        if (messageDetailsBindStates.get()?.any { it.root === root } == true) return state
+        messageDetailsAttachCallbacks.cancel(root)
+        messageDetailsLayoutCallbacks.cancel(root)
+        synchronized(messageDetailsBindTokens) { messageDetailsBindTokens[root] = Any() }
+        messageDetailsRetryListeners.cancel(root)
+        removeTaggedMessageDetailsViews(root)
+        return state
     }
 
     private fun hookOnce(method: Method, block: (XC_MethodHook.MethodHookParam) -> Unit): Boolean {
@@ -676,6 +678,49 @@ private class HchatExtraHooker(
         if (method != null) DexMethodCache.save(methodPrefs, methodCacheKey, "chat_message_view_bind", method)
         else DexMethodCache.clear(methodPrefs, methodCacheKey, "chat_message_view_bind")
         return method
+    }
+
+    private fun locateChattingAdapterBindMethods(): List<Method> {
+        val adapterClass = locateChattingDataAdapterClass() ?: return emptyList()
+        val runtimeKey = methodCacheKey()
+        val cacheName = "chat_adapter_message_binds_v3"
+        fun isBind(method: Method): Boolean {
+            val types = method.parameterTypes
+            return !Modifier.isAbstract(method.modifiers) && !Modifier.isStatic(method.modifiers) &&
+                method.returnType == Void.TYPE && method.declaringClass.isAssignableFrom(adapterClass) &&
+                types.size in 2..3 && isLikelyViewHolderClass(types[0]) && types[1] == Integer.TYPE &&
+                (types.size == 2 || types[2] == List::class.java)
+        }
+        val cached = DexMethodCache.loadList(methodPrefs, runtimeKey, context.hostClassLoader(), cacheName)
+            .filter(::isBind)
+        if (cached.any { it.parameterTypes.size == 2 } && cached.any { it.parameterTypes.size == 3 }) {
+            return cached
+        }
+        val fullBinds = runCatching {
+            context.dexKitBridge().findMethod(FindMethod().apply {
+                matcher(MethodMatcher().apply {
+                    declaredClass(adapterClass.name)
+                    usingStrings(listOf("MicroMsg.ChattingDataAdapterV3", "_onBindViewHolder[", "msgInfo"))
+                })
+            }).mapNotNull { it.toRuntimeMethodOrNull() }
+                .filter { isBind(it) && it.parameterTypes.size == 2 }
+        }.getOrElse {
+            logger("聊天适配器完整绑定定位失败", it)
+            emptyList()
+        }
+        // Pair the verified full binder's exact holder type with (holder, int, List).
+        // This excludes bridge holders and unrelated shared-adapter callbacks.
+        val payloadBinds = methodsRecursive(adapterClass).filter { method ->
+            isBind(method) && method.parameterTypes.size == 3 &&
+                fullBinds.any { it.parameterTypes[0] == method.parameterTypes[0] }
+        }.distinctBy { it.name to it.parameterTypes.toList() }
+        val binds = (fullBinds + payloadBinds).distinct()
+        if (fullBinds.isNotEmpty() && payloadBinds.isNotEmpty()) {
+            DexMethodCache.saveList(methodPrefs, runtimeKey, cacheName, binds)
+        } else {
+            DexMethodCache.clear(methodPrefs, runtimeKey, cacheName)
+        }
+        return binds
     }
 
     private fun locateChattingDataAdapterClass(): Class<*>? {
@@ -1020,39 +1065,37 @@ private class HchatExtraHooker(
         bindObject: Any?,
         args: Array<Any?>?,
         attempt: Int,
-        capturedHolder: Any? = null
+        capturedHolder: Any? = null,
+        capturedMessage: Any? = null
     ): Boolean {
         val holder = messageBindHolder(args) ?: return false
-        val root = findRootView(holder) ?: return false
-        cancelPendingPreDraw(root, messageDetailsRetryListeners)
-        val nativeMessage = resolveMessageFromBindArgs(args)
+        val holderRoot = findRootView(holder) ?: return false
+        if (isScrollingContainer(holderRoot)) return false
+        val root = messageRowRoot(holderRoot)
+        messageDetailsRetryListeners.cancel(root)
+        val nativeMessage = capturedMessage ?: resolveMessageFromBindArgs(args)
             ?: resolveMessageFromAdapter(bindObject, messageBindPosition(args))
         if (nativeMessage == null) {
             if (attempt >= MESSAGE_DETAILS_MAX_RETRY) {
-                removeTaggedMessageDetailsViewsAround(root)
+                removeTaggedMessageDetailsViews(root)
                 logMessageDetailsFailure("message", holder, root)
             }
             scheduleMessageDetailsRetry(root, bindObject, args, attempt, capturedHolder)
             return false
         }
         val messageType = messageType(nativeMessage)
-        if (WeChatMessageTypes.isSystem(messageType)) {
-            removeTaggedMessageDetailsViewsAround(root)
-            restoreAvatarDetailsSpacingsAround(root)
-            return true
-        }
         val details = messageDetails(nativeMessage, knownType = messageType)
-        val viewTag = capturedHolder?.takeIf { isMessageDetailsHolder(it, root) }
-            ?: root.tag?.takeIf { isMessageDetailsHolder(it, root) }
+        val viewTag = holderRoot.tag?.takeIf { isMessageDetailsHolder(it, root) }
+            ?: capturedHolder?.takeIf { isMessageDetailsHolder(it, root) }
             ?: holder
         val label = findHolderTextView(viewTag, "timeTV", holderTimeFieldCache)
         val inserted = insertMessageDetailsLabel(root, label, viewTag, details, nativeMessage = nativeMessage)
         if (!inserted) {
             if (attempt >= MESSAGE_DETAILS_MAX_RETRY) {
-                removeTaggedMessageDetailsViewsAround(root)
+                removeTaggedMessageDetailsViews(root)
                 logMessageDetailsFailure("layout", viewTag, root)
             }
-            scheduleMessageDetailsRetry(root, bindObject, args, attempt, viewTag)
+            scheduleMessageDetailsRetry(root, bindObject, args, attempt, viewTag, nativeMessage)
         }
         label?.setOnClickListener(null)
         if (label != null) label.isClickable = false
@@ -1060,7 +1103,10 @@ private class HchatExtraHooker(
     }
 
     private fun resolveMessageFromBindArgs(args: Array<Any?>?): Any? {
-        return resolveNativeMessage(args?.getOrNull(1))
+        val item = args?.getOrNull(1) ?: return null
+        // Adapter args[1] is a position; payloads and recycled holder fields are not messages.
+        if (item is Number || item is Collection<*>) return null
+        return resolveNativeMessage(item)
     }
 
     private fun logMessageDetailsFailure(reason: String, holder: Any, root: View) {
@@ -1083,14 +1129,34 @@ private class HchatExtraHooker(
         bindObject: Any?,
         args: Array<Any?>?,
         attempt: Int,
-        holder: Any?
+        holder: Any?,
+        nativeMessage: Any? = null
     ) {
         if (attempt >= MESSAGE_DETAILS_MAX_RETRY) return
         val nextAttempt = attempt + 1
-        schedulePreDraw(root, root, messageDetailsRetryListeners) {
-            bindBottomMessageDetails(bindObject, args, nextAttempt, holder)
+        val token = messageDetailsBindToken(root)
+        val bindArgs = args?.copyOf()
+        messageDetailsRetryListeners.schedule(root, root) {
+            if (isCurrentMessageDetailsBind(root, token)) {
+                bindBottomMessageDetails(bindObject, bindArgs, nextAttempt, holder, nativeMessage)
+            }
         }
     }
+
+    private fun messageDetailsBindToken(root: View): Any = synchronized(messageDetailsBindTokens) {
+        messageDetailsBindTokens.getOrPut(root) { Any() }
+    }
+
+    private fun isCurrentMessageDetailsBind(root: View, token: Any): Boolean =
+        messageDetailsConfig.enabled && synchronized(messageDetailsBindTokens) {
+            messageDetailsBindTokens[root] === token
+        }
+
+    private fun isCurrentMessageDetailsLabel(
+        label: TextView, root: View, parent: ViewGroup, token: Any
+    ): Boolean = isCurrentMessageDetailsBind(root, token) &&
+        label.tag == TAG_MESSAGE_DETAILS_VIEW && label.parent === parent &&
+        isViewWithinRoot(parent, root)
 
     private fun isMessageDetailsHolder(holder: Any, root: View): Boolean {
         val timeView = findHolderTextView(holder, "timeTV", holderTimeFieldCache) ?: return false
@@ -1107,10 +1173,11 @@ private class HchatExtraHooker(
     ): Boolean {
         val config = messageDetailsConfig
         val position = config.position
+        val centeredNotice = isCenteredNotice(details.type)
         val configuredAvatarHidden = configuredAvatarHidden(details.isSelf)
         val hiddenAvatarBelowUsesBottom =
             configuredAvatarHidden && position == HchatExtraSettings.POSITION_AVATAR_BELOW
-        val resolvedAvatarAnchor = if (hiddenAvatarBelowUsesBottom) {
+        val resolvedAvatarAnchor = if (centeredNotice || hiddenAvatarBelowUsesBottom) {
             null
         } else {
             findAvatarDetailsAnchor(root, holder, configuredAvatarHidden)
@@ -1125,11 +1192,21 @@ private class HchatExtraHooker(
         if (avatarAnchor == null) {
             restoreAvatarDetailsSpacingsAround(root)
         }
+        val cardMessage = !centeredNotice && (
+            WeChatMessageTypes.normalize(details.type).let { it == WeChatMessageTypes.APP || it == 44 || it == 82 } ||
+                MessageTypeLabels.subtype(details.type, details.content, details.body) != null
+            )
         val bottomAnchor = if (avatarAnchor == null) {
-            messageContentAnchor(holder, nativeTimeLabel ?: return false)
-        } else {
-            null
-        }
+            val candidate = noticeContentAnchor(root, nativeTimeLabel, details.type)
+                ?: nativeTimeLabel?.let { messageContentAnchor(holder, it) }
+            if (cardMessage) {
+                // The reference module owns the entire row branch. A card's timeTV and
+                // clickArea can belong to a transient inner container or be absent.
+                val branch = candidate?.let { safeBottomAnchor(root, it.layoutView) }
+                    ?: rowBottomAnchor(root)
+                branch?.let(::wrapCardDetailsAnchor)
+            } else candidate
+        } else null
         val avatarContent = avatarAnchor
             ?.takeIf { it.hidden }
             ?.let { avatarDetailsContentView(holder, it.parent) }
@@ -1141,7 +1218,7 @@ private class HchatExtraHooker(
                 it.tag = TAG_MESSAGE_DETAILS_VIEW
             }
         if (label.parent !== parent) {
-            removeTaggedMessageDetailsViewsAround(root, keep = label)
+            removeTaggedMessageDetailsViews(root, keep = label)
             (label.parent as? ViewGroup)?.removeView(label)
         }
         rememberMessageDetailsLabel(label)
@@ -1169,6 +1246,7 @@ private class HchatExtraHooker(
             addAvatarDetailsView(root, avatarAnchor, avatarContent, label, position, details.isSelf)
         } else {
             addBottomDetailsView(
+                root,
                 parent,
                 bottomAnchor?.layoutView ?: return false,
                 bottomAnchor.alignmentView,
@@ -1179,8 +1257,46 @@ private class HchatExtraHooker(
         }
         if (inserted) {
             rememberMessageDetailsBinding(label, root, nativeTimeLabel, holder, nativeMessage, details)
+            if (cardMessage && avatarAnchor == null) {
+                observeCardDetailsLayout(root, label)
+            } else {
+                observeMessageDetailsAttachment(root, label)
+            }
         }
         return inserted
+    }
+
+    private fun observeCardDetailsLayout(root: View, label: TextView) {
+        messageDetailsLayoutCallbacks.observe(root, label) { currentRoot, currentLabel ->
+            if (!messageDetailsConfig.enabled) return@observe
+            val binding = synchronized(messageDetailsBindings) { messageDetailsBindings[currentLabel] }
+                ?: return@observe
+            if (binding.root !== currentRoot) return@observe
+            runCatching {
+                insertMessageDetailsLabel(
+                    currentRoot, binding.nativeTimeLabel, binding.holder, binding.details,
+                    preferredLabel = currentLabel, nativeMessage = binding.nativeMessage
+                )
+            }.onFailure { logger("消息卡片布局恢复失败", it) }
+        }
+    }
+
+    private fun observeMessageDetailsAttachment(root: View, label: TextView) {
+        val reference = WeakReference(label)
+        val token = messageDetailsBindToken(root)
+        messageDetailsAttachCallbacks.observe(root) { attached ->
+            if (!isCurrentMessageDetailsBind(attached, token)) return@observe
+            val currentLabel = reference.get() ?: return@observe
+            val binding = synchronized(messageDetailsBindings) { messageDetailsBindings[currentLabel] }
+                ?: return@observe
+            if (binding.root !== attached) return@observe
+            runCatching {
+                insertMessageDetailsLabel(
+                    attached, binding.nativeTimeLabel, binding.holder, binding.details,
+                    preferredLabel = currentLabel, nativeMessage = binding.nativeMessage
+                )
+            }.onFailure { logger("消息详情重新附着校验失败", it) }
+        }
     }
 
     private fun findDirectMessageDetailsLabel(parent: ViewGroup): TextView? {
@@ -1210,6 +1326,15 @@ private class HchatExtraHooker(
         if (kotlin.math.abs(label.textSize / label.resources.displayMetrics.scaledDensity - textSize) > 0.01f) {
             label.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSize)
         }
+    }
+
+    private fun applyForwardedRecordLabel(label: TextView, text: String) {
+        if (!TextUtils.equals(label.text, text)) label.text = text
+        applyMessageDetailsColors(label)
+        label.alpha = 1f
+        label.includeFontPadding = true
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, messageDetailsConfig.textSizeSp)
+        label.setPadding(dp(label.context, 4f), dp(label.context, 2f), dp(label.context, 4f), dp(label.context, 2f))
     }
 
     private fun applyMessageDetailsColors(label: TextView) {
@@ -1263,6 +1388,13 @@ private class HchatExtraHooker(
             label.post {
                 val currentBinding = synchronized(messageDetailsBindings) { messageDetailsBindings[label] }
                 if (currentBinding !== binding) return@post
+                if (!messageDetailsConfig.enabled) {
+                    messageDetailsAttachCallbacks.cancel(binding.root)
+                    messageDetailsLayoutCallbacks.cancel(binding.root)
+                    messageDetailsRetryListeners.cancel(binding.root)
+                    removeMessageDetailsLabel(label)
+                    return@post
+                }
                 if (label.parent != null && label.tag == TAG_MESSAGE_DETAILS_VIEW) {
                     val details = binding.nativeMessage?.let { messageDetails(it) } ?: binding.details
                     insertMessageDetailsLabel(
@@ -1291,14 +1423,12 @@ private class HchatExtraHooker(
         val alreadyAttached = oldParent === parent
         if (oldParent != null && !alreadyAttached) oldParent.removeView(label)
         val gap = dp(label.context, messageDetailsConfig.avatarGapDp.toFloat())
-        val params = if (alreadyAttached) {
-            label.layoutParams as? RelativeLayout.LayoutParams
-        } else {
-            null
-        } ?: RelativeLayout.LayoutParams(
-            RelativeLayout.LayoutParams.WRAP_CONTENT,
-            RelativeLayout.LayoutParams.WRAP_CONTENT
-        )
+        val previousParams = label.layoutParams as? RelativeLayout.LayoutParams
+        val params = previousParams?.takeIf { alreadyAttached && it.rules.all { rule -> rule == 0 } }
+            ?: RelativeLayout.LayoutParams(
+                RelativeLayout.LayoutParams.WRAP_CONTENT,
+                RelativeLayout.LayoutParams.WRAP_CONTENT
+            )
         configureAvatarDetailsLabel(label)
         if (label.translationX != 0f) label.translationX = 0f
         if (label.translationY != 0f) label.translationY = 0f
@@ -1316,6 +1446,8 @@ private class HchatExtraHooker(
         applyAvatarDetailsSpacing(root, parent, position, initialReservedSpace)
         if (!alreadyAttached) {
             parent.addView(label, params)
+        } else if (params !== previousParams) {
+            label.layoutParams = params
         }
         if (!scheduleAvatarDetailsPosition(label, root, target, content, position, gap, isSelf, 0)) {
             parent.removeView(label)
@@ -1337,7 +1469,9 @@ private class HchatExtraHooker(
         attempt: Int
     ): Boolean {
         val parent = target.parent
-        return schedulePreDraw(label, parent, messageDetailsPositionListeners) {
+        val token = messageDetailsBindToken(root)
+        return messageDetailsPositionListeners.schedule(label, parent) {
+            if (!isCurrentMessageDetailsLabel(label, root, parent, token)) return@schedule
             when (positionAvatarDetailsLabel(label, root, target, content, position, gap, isSelf, attempt >= 2)) {
                 AvatarPositionResult.STABLE -> label.visibility = View.VISIBLE
                 AvatarPositionResult.NEEDS_LAYOUT -> {
@@ -1351,7 +1485,7 @@ private class HchatExtraHooker(
                     if (attempt < MESSAGE_DETAILS_POSITION_MAX_RETRY) {
                         scheduleAvatarDetailsPosition(label, root, target, content, position, gap, isSelf, attempt + 1)
                     } else {
-                        removeTaggedMessageDetailsViewsAround(root)
+                        removeMessageDetailsLabel(label)
                         restoreAvatarDetailsSpacingsAround(root)
                     }
                 }
@@ -1587,6 +1721,7 @@ private class HchatExtraHooker(
     }
 
     private fun addBottomDetailsView(
+        root: View,
         parent: ViewGroup,
         content: View,
         alignmentView: View,
@@ -1605,6 +1740,9 @@ private class HchatExtraHooker(
         val alreadyAttached = oldParent === parent
         if (oldParent != null && !alreadyAttached) oldParent.removeView(label)
         val config = messageDetailsConfig
+        if (isCenteredNotice(details.type)) {
+            return addCenteredDetailsView(parent, content, label)
+        }
         val edge = dp(label.context, config.leftMarginDp.toFloat())
         val right = dp(label.context, config.rightMarginDp.toFloat())
         if (label.translationX != 0f) label.translationX = 0f
@@ -1650,7 +1788,8 @@ private class HchatExtraHooker(
                     label.textAlignment = View.TEXT_ALIGNMENT_TEXT_START
                 }
             }
-            val expectedVisibility = if (avatarHidden) View.INVISIBLE else View.VISIBLE
+            // Alignment may be cancelled during recycling; it must never own visibility.
+            val expectedVisibility = View.VISIBLE
             if (label.visibility != expectedVisibility) label.visibility = expectedVisibility
             if (!alreadyAttached) {
                 parent.addView(label, expectedParams)
@@ -1658,9 +1797,9 @@ private class HchatExtraHooker(
                 label.layoutParams = expectedParams
             }
             if (avatarHidden) {
-                scheduleBottomDetailsAlignment(label, parent, alignmentView, details.isSelf, 0)
+                scheduleBottomDetailsAlignment(label, root, parent, alignmentView, details.isSelf, 0)
             } else {
-                cancelPendingPreDraw(label, messageDetailsPositionListeners)
+                messageDetailsPositionListeners.cancel(label)
             }
             refreshMessageDetailsColorsAfterAttach(label, newlyAttached = !alreadyAttached)
             return true
@@ -1686,8 +1825,8 @@ private class HchatExtraHooker(
         when (parent) {
             is LinearLayout -> {
                 val linearParams = LinearLayout.LayoutParams(params)
+                linearParams.gravity = if (details.isSelf) Gravity.END else Gravity.START
                 if (avatarHidden) {
-                    linearParams.gravity = if (details.isSelf) Gravity.END else Gravity.START
                     (label.layoutParams as? ViewGroup.MarginLayoutParams)?.let { current ->
                         if (details.isSelf) {
                             linearParams.marginEnd = current.marginEnd
@@ -1697,7 +1836,7 @@ private class HchatExtraHooker(
                             linearParams.leftMargin = current.leftMargin
                         }
                     }
-                    if (label.visibility != View.INVISIBLE) label.visibility = View.INVISIBLE
+                    if (label.visibility != View.VISIBLE) label.visibility = View.VISIBLE
                 } else {
                     if (label.visibility != View.VISIBLE) label.visibility = View.VISIBLE
                 }
@@ -1717,9 +1856,9 @@ private class HchatExtraHooker(
                     }
                 }
                 if (avatarHidden) {
-                    scheduleBottomDetailsAlignment(label, parent, alignmentView, details.isSelf, 0)
+                    scheduleBottomDetailsAlignment(label, root, parent, alignmentView, details.isSelf, 0)
                 } else {
-                    cancelPendingPreDraw(label, messageDetailsPositionListeners)
+                    messageDetailsPositionListeners.cancel(label)
                 }
                 refreshMessageDetailsColorsAfterAttach(label, newlyAttached = !alreadyAttached)
             }
@@ -1730,16 +1869,19 @@ private class HchatExtraHooker(
 
     private fun scheduleBottomDetailsAlignment(
         label: TextView,
+        root: View,
         parent: ViewGroup,
         alignmentView: View,
         isSelf: Boolean,
         attempt: Int
     ) {
-        if (!schedulePreDraw(label, parent, messageDetailsPositionListeners) {
+        val token = messageDetailsBindToken(root)
+        if (!messageDetailsPositionListeners.schedule(label, parent) {
+            if (!isCurrentMessageDetailsLabel(label, root, parent, token)) return@schedule
             if (positionBottomDetailsLabel(label, parent, alignmentView, isSelf)) {
                 label.visibility = View.VISIBLE
             } else if (attempt < MESSAGE_DETAILS_POSITION_MAX_RETRY) {
-                scheduleBottomDetailsAlignment(label, parent, alignmentView, isSelf, attempt + 1)
+                scheduleBottomDetailsAlignment(label, root, parent, alignmentView, isSelf, attempt + 1)
             } else {
                 label.visibility = View.VISIBLE
             }
@@ -1785,7 +1927,7 @@ private class HchatExtraHooker(
     private fun refreshMessageDetailsColorsAfterAttach(label: TextView, newlyAttached: Boolean) {
         if (!newlyAttached) return
         applyMessageDetailsColors(label)
-        schedulePreDraw(label, label, messageDetailsColorListeners) {
+        messageDetailsColorListeners.schedule(label, label) {
             if (label.parent != null && label.tag == TAG_MESSAGE_DETAILS_VIEW) {
                 applyMessageDetailsColors(label)
             }
@@ -1844,10 +1986,11 @@ private class HchatExtraHooker(
     }
 
     private fun chattingAdapterFromBindObject(source: Any): Any? {
+        val adapterClass = locateChattingDataAdapterClass()
+        if (adapterClass?.isInstance(source) == true) return source
         itemListFieldCache[source.javaClass]?.let { field ->
             KavaReflector.readField(field, source)?.let { return it }
         }
-        val adapterClass = locateChattingDataAdapterClass()
         var current: Class<*>? = source.javaClass
         while (current != null && current != Any::class.java) {
             for (field in KavaReflector.declaredFields(current)) {
@@ -2006,32 +2149,25 @@ private class HchatExtraHooker(
         return name.contains("RecyclerView") || name.contains("ListView") || name.contains("ScrollView")
     }
 
+    private fun removeMessageDetailsLabel(label: TextView) {
+        messageDetailsPositionListeners.cancel(label)
+        messageDetailsColorListeners.cancel(label)
+        synchronized(messageDetailsBindings) { messageDetailsBindings.remove(label) }
+        synchronized(messageDetailsLabels) { messageDetailsLabels.remove(label) }
+        (label.parent as? ViewGroup)?.removeView(label)
+    }
+
     private fun removeTaggedMessageDetailsViews(root: View, keep: View? = null) {
         if (root !is ViewGroup) return
         var index = root.childCount - 1
         while (index >= 0) {
             val child = root.getChildAt(index)
             if (child !== keep && child is TextView && child.tag == TAG_MESSAGE_DETAILS_VIEW) {
-                cancelPendingPreDraw(child, messageDetailsPositionListeners)
-                cancelPendingPreDraw(child, messageDetailsColorListeners)
-                synchronized(messageDetailsBindings) { messageDetailsBindings.remove(child) }
-                synchronized(messageDetailsLabels) { messageDetailsLabels.remove(child) }
-                root.removeViewAt(index)
+                removeMessageDetailsLabel(child)
             } else {
                 removeTaggedMessageDetailsViews(child, keep)
             }
             index--
-        }
-    }
-
-    private fun removeTaggedMessageDetailsViewsAround(root: View, keep: View? = null) {
-        removeTaggedMessageDetailsViews(root, keep)
-        var current = root.parent as? ViewGroup
-        var depth = 0
-        while (current != null && depth < 3 && !isScrollingContainer(current)) {
-            removeTaggedMessageDetailsViews(current, keep)
-            current = current.parent as? ViewGroup
-            depth++
         }
     }
 
@@ -2887,6 +3023,139 @@ private class HchatExtraHooker(
         return if (isSelf) hideSelfAvatar else hideOtherAvatar
     }
 
+    // These rows have no avatar: the system row and pat row are centered by WeChat itself.
+    private fun isCenteredNotice(type: Int): Boolean = WeChatMessageTypes.isSystem(type) || when (type) {
+        64, 570425393, 603979825, 285222674, 889192497, 922746929 -> true
+        else -> false
+    }
+
+    private fun noticeContentAnchor(root: View, timeLabel: TextView?, type: Int): BottomDetailsAnchor? {
+        if (!isCenteredNotice(type)) return null
+        val name = if (type == 889192497 || type == 922746929) "kpw" else "bkl"
+        val id = noticeContentIds.getOrPut(name) {
+            root.resources.getIdentifier(name, "id", "com.tencent.mm")
+        }
+        if (id == 0) return null
+        val content = root.findViewById<View>(id) ?: return null
+        val parent = (timeLabel?.parent as? ViewGroup) ?: (root as? ViewGroup) ?: return null
+        if (parent !is RelativeLayout && (parent !is LinearLayout || parent.orientation != LinearLayout.VERTICAL)) {
+            return null
+        }
+        val layoutView = directChildOf(parent, content) ?: return null
+        return BottomDetailsAnchor(parent, layoutView, content)
+    }
+
+    private fun addCenteredDetailsView(parent: ViewGroup, content: View, label: TextView): Boolean {
+        messageDetailsPositionListeners.cancel(label)
+        label.translationX = 0f
+        label.translationY = 0f
+        label.gravity = Gravity.CENTER
+        label.textAlignment = View.TEXT_ALIGNMENT_CENTER
+        label.visibility = View.VISIBLE
+        val newlyAttached = label.parent !== parent
+        when (parent) {
+            is RelativeLayout -> {
+                ensureViewId(content)
+                val params = RelativeLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    addRule(RelativeLayout.BELOW, content.id)
+                    addRule(RelativeLayout.CENTER_HORIZONTAL)
+                    topMargin = dp(label.context, 2f)
+                }
+                if (newlyAttached) parent.addView(label, params)
+                else if (!sameRelativeLayoutParams(label.layoutParams, params)) label.layoutParams = params
+            }
+            is LinearLayout -> {
+                if (parent.orientation != LinearLayout.VERTICAL) return false
+                val params = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    topMargin = dp(label.context, 2f)
+                }
+                val contentIndex = parent.indexOfChild(content)
+                if (contentIndex < 0) return false
+                if (newlyAttached) parent.addView(label, contentIndex + 1, params)
+                else if (parent.indexOfChild(label) != contentIndex + 1) {
+                    parent.removeView(label)
+                    parent.addView(label, parent.indexOfChild(content) + 1, params)
+                } else if (!sameLinearLayoutParams(label.layoutParams, params)) label.layoutParams = params
+            }
+            else -> return false
+        }
+        refreshMessageDetailsColorsAfterAttach(label, newlyAttached)
+        return true
+    }
+
+    private fun messageRowRoot(view: View): View {
+        var current = view
+        repeat(10) {
+            val parent = current.parent as? ViewGroup ?: return view
+            if (isScrollingContainer(parent)) return current
+            current = parent
+        }
+        return view
+    }
+
+
+    private fun rowBottomAnchor(root: View): BottomDetailsAnchor? {
+        val group = root as? ViewGroup ?: return null
+        if (group !is RelativeLayout && group !is android.widget.FrameLayout &&
+            !(group is LinearLayout && group.orientation == LinearLayout.VERTICAL)) return null
+        val children = (0 until group.childCount).map(group::getChildAt)
+            .filter { it.visibility != View.GONE && it.tag != TAG_MESSAGE_DETAILS_VIEW }
+        // Multiple native children are indistinguishable before measurement. Retry on
+        // pre-draw instead of wrapping the timestamp/checkbox from a zero-sized row.
+        if (children.size > 1 && children.none { it.bottom > 0 }) return null
+        val bottom = children.maxByOrNull {
+            it.bottom + ((it.layoutParams as? ViewGroup.MarginLayoutParams)?.bottomMargin ?: 0)
+        } ?: return null
+        return BottomDetailsAnchor(group, bottom, bottom)
+    }
+
+
+    private fun wrapCardDetailsAnchor(anchor: BottomDetailsAnchor): BottomDetailsAnchor {
+        val content = anchor.layoutView
+        if (content is LinearLayout && content.tag == "hchat_card_details_column") {
+            val card = content.getChildAt(0) ?: return anchor
+            return BottomDetailsAnchor(content, card, card)
+        }
+        (content.parent as? LinearLayout)?.takeIf { it.tag == "hchat_card_details_column" }?.let {
+            return BottomDetailsAnchor(it, content, content)
+        }
+        val parent = content.parent as? ViewGroup ?: return anchor
+        val index = parent.indexOfChild(content)
+        if (index < 0) return anchor
+        val outerParams = content.layoutParams ?: return anchor
+        val column = LinearLayout(content.context).apply {
+            orientation = LinearLayout.VERTICAL
+            tag = "hchat_card_details_column"
+            clipChildren = false
+        }
+        // 原卡片保持其 ID、背景和 holder 引用；外部参数交给纵向容器。
+        val width = outerParams.width
+        val height = outerParams.height.takeIf { it >= 0 } ?: ViewGroup.LayoutParams.WRAP_CONTENT
+        outerParams.height = ViewGroup.LayoutParams.WRAP_CONTENT
+        parent.removeViewAt(index)
+        column.addView(content, LinearLayout.LayoutParams(width, height))
+        parent.addView(column, index, outerParams)
+        return BottomDetailsAnchor(column, content, content)
+    }
+
+
+    private fun safeBottomAnchor(root: View, content: View): BottomDetailsAnchor? {
+        val row = root as? ViewGroup ?: return null
+        // 标签只能是完整内容分支的兄弟，绝不退回价格/店铺所在的内部布局。
+        if (row !is RelativeLayout && row !is android.widget.FrameLayout &&
+            !(row is LinearLayout && row.orientation == LinearLayout.VERTICAL)) return null
+        if (content === row || !isViewWithinRoot(content, row)) return null
+        val cardBranch = directChildOf(row, content) ?: return null
+        if (cardBranch.tag == TAG_MESSAGE_DETAILS_VIEW) return null
+        return BottomDetailsAnchor(row, cardBranch, cardBranch)
+    }
+
+
     private fun messageContentAnchor(holder: Any, label: TextView): BottomDetailsAnchor? {
         val labelParent = label.parent as? ViewGroup ?: return null
         if (labelParent !is RelativeLayout && labelParent !is LinearLayout) return null
@@ -3510,6 +3779,7 @@ private class HchatExtraHooker(
             HchatExtraSettings.KEY_MESSAGE_DETAILS_RIGHT_MARGIN
         )
         private val MESSAGE_DETAILS_REBIND_KEYS = MESSAGE_DETAILS_LAYOUT_KEYS + setOf(
+            HchatExtraSettings.KEY_MESSAGE_DETAILS,
             HchatExtraSettings.KEY_MESSAGE_DETAILS_FORMAT,
             HchatExtraSettings.KEY_MESSAGE_DETAILS_TIME_FORMAT,
             HchatExtraSettings.KEY_MESSAGE_DETAILS_CLICK_SHOW
