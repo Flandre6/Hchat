@@ -22,25 +22,7 @@ internal object ConversationGroupAutomaticResolver {
         context: Context,
         sourceGroups: List<ConversationGroup>
     ): ConversationGroupAutomaticResolution {
-        val groups = orderedGroups(sourceGroups)
-        val automaticGroups = groups.filter(ConversationGroup::automaticGroupingEnabled)
-        val needsChatGroups = automaticGroups.any {
-            it.automaticAllGroups || it.automaticNewGroups || it.automaticMutedGroups ||
-                it.automaticOwnedGroups || it.automaticEnterpriseGroups ||
-                it.automaticGroupIds.isNotEmpty() || it.automaticGroupLabelIds.isNotEmpty()
-        }
-        val needsOfficialAccounts = automaticGroups.any {
-            it.automaticOfficialAccounts || it.automaticOfficialIncludeIds.isNotEmpty()
-        }
-        if (!needsChatGroups && !needsOfficialAccounts) {
-            return ConversationGroupAutomaticResolution(
-                conversationIds = groups.associate { it.id to it.conversationIds },
-                observedConversationGroupIds = null,
-                newConversationGroupIds = emptySet(),
-                automaticNewGroupsEnabled = false,
-                baselineInitialized = false
-            )
-        }
+        val groups = orderedGroups(ConversationGroupStore.normalize(sourceGroups))
         val automaticNewGroupsEnabled = groups.any {
             it.automaticGroupingEnabled && it.automaticNewGroups
         }
@@ -58,50 +40,27 @@ internal object ConversationGroupAutomaticResolver {
                 baselineInitialized = baselineInitialized
             )
 
-        val chatGroups = if (needsChatGroups) {
-            contacts.getPickerGroups()
-                .map { it.wxId.trim() }
-                .filter { it.isNotEmpty() }
-                .distinct()
-        } else {
-            emptyList()
-        }
+        val chatGroups = contacts.getPickerGroups()
+            .map { it.wxId.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
         val chatGroupIds = chatGroups.toSet()
-        val observedConversationGroupIds = if (automaticNewGroupsEnabled) {
-            loadConversationGroupIds(chatGroupIds)
-        } else {
-            null
-        }
-        val seenGroupIds = if (automaticNewGroupsEnabled) {
-            ConversationGroupStore.loadAutomaticSeenGroupIds(context)
-        } else {
-            emptySet()
-        }
+        val observedConversationGroupIds = loadConversationGroupIds(chatGroupIds)
+        val seenGroupIds = ConversationGroupStore.loadAutomaticSeenGroupIds(context)
         val newGroupIds = if (automaticNewGroupsEnabled && baselineInitialized) {
             observedConversationGroupIds.orEmpty() - seenGroupIds
         } else {
             emptySet()
         }
-        val officialIds = if (needsOfficialAccounts) {
-            contacts.getPickerOfficialAccounts()
-                .map { it.wxId.trim() }
-                .filter { it.isNotEmpty() }
-                .distinct()
-                .toSet()
-        } else {
-            emptySet()
-        }
-        val self = if (automaticGroups.any { it.automaticOwnedGroups }) {
-            runCatching { WeChatApis.account()?.selfWxId().orEmpty().trim() }.getOrDefault("")
-        } else {
-            ""
-        }
-        val labelGroups = if (automaticGroups.any { it.automaticGroupLabelIds.isNotEmpty() }) {
-            GroupChatLabelStore.load(context)
-                .associate { it.id to it.groupIds.filter(chatGroupIds::contains).toSet() }
-        } else {
-            emptyMap()
-        }
+        val officialIds = contacts.getPickerOfficialAccounts()
+            .map { it.wxId.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .toSet()
+        val self = runCatching { WeChatApis.account()?.selfWxId().orEmpty().trim() }
+            .getOrDefault("")
+        val labelGroups = GroupChatLabelStore.load(context)
+            .associate { it.id to it.groupIds.filter(chatGroupIds::contains).toSet() }
 
         val manualOwners = buildMap {
             groups.forEach { group ->

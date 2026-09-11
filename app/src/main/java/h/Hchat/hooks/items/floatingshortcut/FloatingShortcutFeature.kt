@@ -17,11 +17,7 @@ class FloatingShortcutFeature : BaseFeature() {
 
     override fun onFeatureInstall(context: FeatureContext) {
         FloatingShortcutRuntime.install(context.hostContext())
-        trackSubscription(
-            WeChatApis.lifecycle()?.subscribe { event ->
-                FloatingShortcutRuntime.onActivityEvent(event)
-            }
-        )
+        // Activity 由早期注册的 Application 回调统一跟踪，避免重复派发挂载任务。
         trackSubscription(
             WeChatApis.chatPage()?.subscribe { event ->
                 FloatingShortcutRuntime.onChatPageChanged(event.isEnter)

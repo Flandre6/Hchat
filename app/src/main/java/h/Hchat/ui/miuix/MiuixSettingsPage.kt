@@ -44,6 +44,7 @@ import h.Hchat.crash.CrashReportRuntime
 import h.Hchat.crash.CrashReportSettings
 import h.Hchat.crash.CrashReportSettingsProvider
 import h.Hchat.hooks.api.ui.HchatAgentIconDrawable
+import h.Hchat.hooks.items.specialmessage.SpecialMessageFeature
 import h.Hchat.hooks.items.floatingshortcut.FloatingShortcutFeature
 import h.Hchat.hooks.items.floatingshortcut.FloatingShortcutGlyph
 import h.Hchat.hooks.items.floatingshortcut.FloatingShortcutGlyphDrawable
@@ -2596,6 +2597,7 @@ private object HchatConfigBackup {
         ProfileIdSettings.PREFS_NAME,
         SettingsEntrySettings.PREFS_NAME,
         FloatingShortcutSettings.PREFS_NAME,
+        SpecialMessageFeature.PREFS,
         QuickMarkReadSettings.PREFS_NAME,
         CustomNotificationSettings.PREFS_NAME,
         ConversationGroupStore.PREFS_NAME,
@@ -3013,6 +3015,7 @@ private fun practicalFeatureGroups(
         FeatureGroupEntry(
             title = "聊天",
             providers = practicalProviders.filterByIds(
+                SpecialMessageFeature.ID,
                 AntiRecallFeature.ID,
                 MultiRecallFeature.ID,
                 AutoReplyFeature.ID,
@@ -3892,6 +3895,7 @@ private fun featureSubSearchTerms(featureId: String): List<String> {
         MessageBubbleFeature.ID -> listOf("消息气泡", "聊天气泡", "自定义气泡", "左侧气泡", "右侧气泡", "红包气泡", "转账气泡", "系统消息气泡", "浅色模式", "深色模式", "NinePatch", "九宫格")
         MessageTextColorFeature.ID -> listOf("消息文本颜色", "文字颜色", "聊天气泡文字", "取色器", "浅色模式", "深色模式")
         HomeTextColorFeature.ID -> listOf("首页文字颜色", "标题颜色", "副标题颜色", "渐变文字", "微信首页", "通讯录", "发现", "我")
+        SpecialMessageFeature.ID -> listOf("特殊消息", "安全消息", "文本", "链接", "表情", "生效名单")
         ChatTimeStyleFeature.ID -> listOf("会话时间样式", "聊天时间", "微信时间", "自定义时间", "隐藏时间", "时间格式")
         HideChatAvatarFeature.ID -> listOf("隐藏头像", "隐藏自己头像", "隐藏对方头像", "聊天头像", "群聊头像", "私聊头像")
         CustomBottomBarFeature.ID -> listOf(
@@ -4502,6 +4506,7 @@ private fun FeatureSettingsPage(
         AtAllNotificationBlockFeature.ID -> AtAllNotificationBlockMiuixPage(context, provider, onBack)
         SettingsFeature.ID -> SettingsEntryMiuixPage(context, provider, onBack)
         PluginAgentEntryProvider.ID -> PluginAgentEntryMiuixPage(context, provider, onBack)
+        SpecialMessageFeature.ID -> SpecialMessageMiuixPage(context, onBack)
         FloatingShortcutFeature.ID -> FloatingShortcutMiuixPage(context, provider, onBack)
         MessageDetailsSettingsProvider.FEATURE_ID -> MessageDetailsConfigPage(
             context = context,
@@ -9361,7 +9366,13 @@ private fun messageDetailsVariables(): List<TemplateVariable> {
     return listOf(
         TemplateVariable("\${time}", "时间"),
         TemplateVariable("\${relativeTime}", "相对时间"),
-        TemplateVariable("\${type}", "消息类型（中文）"),
+        TemplateVariable("\${type}", "消息类型（含文件、红包、小程序等）"),
+        TemplateVariable("\${appType}", "卡片子类型编号（非卡片为空）"),
+        TemplateVariable("\${baseType}", "基础消息类型编号"),
+        TemplateVariable("\${direction}", "收发方向"),
+        TemplateVariable("\${talker}", "会话 ID"),
+        TemplateVariable("\${createTime}", "消息时间戳（毫秒）"),
+        TemplateVariable("\${rawAtUserList}", "原始艾特名单"),
         TemplateVariable("\${typeDec}", "类型编号（十进制）"),
         TemplateVariable("\${typeHex}", "类型编号（十六进制）"),
         TemplateVariable("\${msgId}", "本地消息编号"),
@@ -9750,14 +9761,17 @@ private fun FloatingShortcutMiuixPage(
                         InsetDivider()
                         PopupChoiceRow(
                             title = "展开方向",
-                            summary = if (expandDirection == FloatingShortcutSettings.EXPAND_DOWN) {
-                                "向下展开"
-                            } else {
-                                "向上展开"
+                            summary = when (expandDirection) {
+                                FloatingShortcutSettings.EXPAND_DOWN -> "向下展开"
+                                FloatingShortcutSettings.EXPAND_LEFT -> "向左展开"
+                                FloatingShortcutSettings.EXPAND_RIGHT -> "向右展开"
+                                else -> "向上展开"
                             },
                             options = listOf(
                                 PopupChoice("向上展开", FloatingShortcutSettings.EXPAND_UP),
-                                PopupChoice("向下展开", FloatingShortcutSettings.EXPAND_DOWN)
+                                PopupChoice("向下展开", FloatingShortcutSettings.EXPAND_DOWN),
+                                PopupChoice("向左展开", FloatingShortcutSettings.EXPAND_LEFT),
+                                PopupChoice("向右展开", FloatingShortcutSettings.EXPAND_RIGHT)
                             ),
                             currentValue = expandDirection,
                             onValueChanged = {
@@ -17433,14 +17447,6 @@ private fun ChatTimeStyleMiuixPage(
     onBack: () -> Unit
 ) {
     val sp = remember { HchatStorage.preferences(context, ChatTimeStyleSettings.PREFS_NAME) }
-    var enabled by remember {
-        mutableStateOf(
-            sp.getBoolean(
-                ChatTimeStyleSettings.KEY_ENABLE,
-                ChatTimeStyleSettings.DEFAULT_ENABLE
-            )
-        )
-    }
     var mode by remember {
         mutableStateOf(
             ChatTimeStyleSettings.normalizeMode(
@@ -17476,43 +17482,31 @@ private fun ChatTimeStyleMiuixPage(
             item { SmallTitle(text = "聊天时间") }
             item {
                 SettingsCard {
-                    SwitchRow(
-                        checked = enabled,
-                        title = "启用会话时间样式",
-                        summary = "关闭后完全交给微信原生处理",
-                        onCheckedChange = {
-                            enabled = it
-                            sp.edit().putBoolean(ChatTimeStyleSettings.KEY_ENABLE, it).apply()
+                    PopupChoiceRow(
+                        title = "显示方式",
+                        summary = chatTimeModeLabel(mode),
+                        options = chatTimeModeChoices(),
+                        currentValue = mode,
+                        onValueChanged = {
+                            mode = ChatTimeStyleSettings.normalizeMode(it)
+                            sp.edit().putString(ChatTimeStyleSettings.KEY_MODE, mode).apply()
                         }
                     )
-                    if (enabled) {
+                    if (mode == ChatTimeStyleSettings.MODE_CUSTOM ||
+                        mode == ChatTimeStyleSettings.MODE_EVERY
+                    ) {
                         InsetDivider()
-                        PopupChoiceRow(
-                            title = "显示方式",
-                            summary = chatTimeModeLabel(mode),
-                            options = chatTimeModeChoices(),
-                            currentValue = mode,
-                            onValueChanged = {
-                                mode = ChatTimeStyleSettings.normalizeMode(it)
-                                sp.edit().putString(ChatTimeStyleSettings.KEY_MODE, mode).apply()
+                        InputRow(
+                            title = "时间格式",
+                            summary = "例如 yyyy-MM-dd HH:mm:ss",
+                            value = timeFormat,
+                            onValueChange = {
+                                timeFormat = it
+                                sp.edit()
+                                    .putString(ChatTimeStyleSettings.KEY_TIME_FORMAT, it)
+                                    .apply()
                             }
                         )
-                        if (mode == ChatTimeStyleSettings.MODE_CUSTOM ||
-                            mode == ChatTimeStyleSettings.MODE_EVERY
-                        ) {
-                            InsetDivider()
-                            InputRow(
-                                title = "时间格式",
-                                summary = "例如 yyyy-MM-dd HH:mm:ss",
-                                value = timeFormat,
-                                onValueChange = {
-                                    timeFormat = it
-                                    sp.edit()
-                                        .putString(ChatTimeStyleSettings.KEY_TIME_FORMAT, it)
-                                        .apply()
-                                }
-                            )
-                        }
                     }
                 }
             }
@@ -42848,7 +42842,9 @@ private fun AboutCard() {
         InsetDivider()
         InfoRow(label = "宿主", value = hostVersion)
         InsetDivider()
-        InfoRow(label = "作者", value = "。。")
+        InfoRow(label = "Hchat作者", value = "。。")
+        InsetDivider()
+        InfoRow(label = "分支作者", value = "企鹅")
     }
 }
 
@@ -44716,3 +44712,83 @@ private fun isDarkMode(context: Context): Boolean {
 }
 
 private const val FAVORITE_BACKGROUND_BATCH_DELAY_MS = 40L
+
+
+// QEchat 特殊消息的原生设置入口，复用 Hchat 页面过渡和名单选择器。
+@Composable
+private fun SpecialMessageMiuixPage(context: Context, onBack: () -> Unit) {
+    val sp = remember { HchatStorage.preferences(context, SpecialMessageFeature.PREFS) }
+    var route by remember { mutableStateOf(0) }
+    var allowedTalkers by remember { mutableStateOf(sp.getString("talkers", "").orEmpty()) }
+    var picker by remember { mutableStateOf<ContactPickerRequest?>(null) }
+    val mainList = rememberLazyListState()
+    val safetyList = rememberLazyListState()
+    val back = { if (route == 2) { picker = null; route = 1 } else if (route == 1) route = 0 else onBack() }
+    RegisterSettingsBackHandler(back)
+    SettingsRouteTransition(targetState = route, label = "SpecialMessageRoute", depthOf = { it }) { current ->
+        if (current == 2) {
+            picker?.let { request ->
+                ContactPickerPage(context, request, onBack = back, onConfirm = { selected ->
+                    request.onValue(formatIds(selected.map { it.id }))
+                    picker = null
+                    route = 1
+                })
+            }
+        } else {
+            val safety = current == 1
+            val behavior = MiuixScrollBehavior()
+            PageScaffold(
+                title = if (safety) "安全消息" else "特殊消息",
+                largeTitle = if (safety) "安全消息" else "特殊消息",
+                scrollBehavior = behavior,
+                bottomBar = { BottomActionBar(primaryText = "返回", onPrimaryClick = back) }
+            ) { padding ->
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize().imePadding().nestedScroll(behavior.nestedScrollConnection),
+                    state = if (safety) safetyList else mainList,
+                    contentPadding = padding
+                ) {
+                    item { SmallTitle(text = "功能设置") }
+                    item {
+                        SettingsCard {
+                            if (!safety) {
+                                ActionRow("安全消息", "文本、链接、表情") { route = 1 }
+                            } else {
+                                SwitchRow(sp, "enabled", "文本安全消息", "", false)
+                                InsetDivider()
+                                SwitchRow(sp, "link", "链接安全消息", "", false)
+                                InsetDivider()
+                                SwitchRow(sp, "emoji", "表情安全消息", "", false)
+                                InsetDivider()
+                                InfoRow("图片安全消息", "暂未实现")
+                            }
+                        }
+                    }
+                    if (safety) {
+                        item { SmallTitle(text = "安全消息配置") }
+                        item {
+                            SettingsCard {
+                                ActionRow("生效名单", autoReplySelectedIdSummary(allowedTalkers) + "；空名单不生效") {
+                                    picker = ContactPickerRequest(
+                                        title = "选择生效名单",
+                                        mode = ContactPickerMode.BOTH,
+                                        multiSelect = true,
+                                        existingValue = allowedTalkers,
+                                        onValue = {
+                                            allowedTalkers = it
+                                            sp.edit().putString("talkers", it).apply()
+                                        },
+                                        enableLabels = true
+                                    )
+                                    route = 2
+                                }
+                                InsetDivider()
+                                InfoRow("当前适配", "微信 8.0.76 (3140)")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

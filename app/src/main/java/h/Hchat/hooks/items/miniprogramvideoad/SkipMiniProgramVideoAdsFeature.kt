@@ -70,8 +70,8 @@ class SkipMiniProgramVideoAdsFeature : BaseFeature() {
                 return runCatching {
                     HookRegistry.get().hook(subscribeHandler, object : XC_MethodHook() {
                         override fun beforeHookedMethod(param: MethodHookParam) {
-                            if (!isEnabled(context)) return
                             if (param.args.getOrNull(0) != EVENT_VIDEO_TIME_UPDATE) return
+                            if (!isEnabled(context)) return
                             val payload = param.args.getOrNull(1) as? String ?: return
                             val json = runCatching { JSONObject(payload) }.getOrNull() ?: return
                             json.put("position", 60)

@@ -2253,13 +2253,13 @@ private class HchatExtraHooker(
         val needsAtUsers = includeContent || tokens.any {
             it == "atUserList" || it == "rawAtUserList" || it == "mentionedUsers"
         }
-        val needsContent = includeContent || needsAtUsers
+        val needsContent = includeContent || needsAtUsers || "type" in tokens || "appType" in tokens
         val content = if (needsContent) {
             readMessageString(message, "getContent", "field_content", "content")
         } else {
             ""
         }
-        val talker = if (includeContent) {
+        val talker = if (includeContent || "talker" in tokens) {
             readMessageString(message, "getTalker", "field_talker", "talker")
         } else {
             ""
@@ -2277,7 +2277,7 @@ private class HchatExtraHooker(
             0L
         }
         val messageId = if ("msgId" in tokens) messageId(message) else 0L
-        val createTime = if ("time" in tokens || "relativeTime" in tokens) {
+        val createTime = if ("time" in tokens || "relativeTime" in tokens || "createTime" in tokens) {
             parseLong(readMessageValue(message, "getCreateTime", "field_createTime", "createTime")) ?: 0L
         } else {
             0L
@@ -2744,7 +2744,6 @@ private class HchatExtraHooker(
         val config = messageDetailsConfig
         val createTime = details.createTime.takeIf { it > 0L } ?: System.currentTimeMillis()
         var formattedTime: String? = null
-        var normalizedType: Int? = null
         fun formatTime(): String {
             return formattedTime ?: LocalDateTime
                 .ofInstant(Instant.ofEpochMilli(createTime), ZoneId.systemDefault())
@@ -2756,9 +2755,12 @@ private class HchatExtraHooker(
             when (name) {
                 "time" -> formatTime()
                 "relativeTime" -> relativeMessageTime(createTime)
-                "type" -> messageTypeLabel(
-                    normalizedType ?: WeChatMessageTypes.normalize(details.type).also { normalizedType = it }
-                )
+                "type" -> MessageTypeLabels.label(details.type, details.content, details.body)
+                "appType" -> MessageTypeLabels.subtype(details.type, details.content, details.body)?.toString().orEmpty()
+                "baseType" -> WeChatMessageTypes.normalize(details.type).toString()
+                "direction" -> if (details.isSelf) "发出" else "收到"
+                "talker" -> details.talker
+                "createTime" -> details.createTime.takeIf { it > 0L }?.toString().orEmpty()
                 "typeDec" -> details.type.toString()
                 "typeHex" -> "0x" + Integer.toUnsignedString(details.type, 16)
                 "msgId" -> details.id.toString()
@@ -2769,23 +2771,6 @@ private class HchatExtraHooker(
                 else -> null
             }
         }
-    }
-
-    private fun messageTypeLabel(type: Int): String = when (type) {
-        37 -> "好友申请"
-        WeChatMessageTypes.TEXT -> "文字"
-        WeChatMessageTypes.IMAGE -> "图片"
-        WeChatMessageTypes.VOICE -> "语音"
-        42, 66 -> "名片"
-        WeChatMessageTypes.VIDEO -> "视频"
-        62 -> "小视频"
-        WeChatMessageTypes.EMOJI -> "表情"
-        WeChatMessageTypes.LOCATION -> "位置"
-        WeChatMessageTypes.APP -> "链接/卡片"
-        50, 51, 52, 53 -> "通话消息"
-        WeChatMessageTypes.SYSTEM -> "系统消息"
-        WeChatMessageTypes.RECALLED -> "撤回消息"
-        else -> "未知消息"
     }
 
     private fun relativeMessageTime(createTime: Long): String {

@@ -125,7 +125,6 @@ public final class WeChatConversationChangeApi {
 
     private void onDatabaseChanged(DatabaseChange change) {
         if (change == null || !"rconversation".equalsIgnoreCase(change.table)) return;
-        if (listeners.isEmpty()) return;
         WeChatConversation conversation = resolveConversation(change);
         ConversationChange event = new ConversationChange(change, conversation);
         for (Listener listener : listeners) {

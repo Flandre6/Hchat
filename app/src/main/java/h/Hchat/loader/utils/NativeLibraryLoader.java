@@ -24,6 +24,7 @@ import de.robv.android.xposed.XposedBridge;
 public class NativeLibraryLoader {
     private static final String TAG = "[Hchat:NativeLoader]";
     private static final Object EXTRACTION_LOCK = new Object();
+    private static final NativeLoadCache LOADED_LIBRARIES = new NativeLoadCache();
     private static final String DEXKIT_SO = "libdexkit.so";
     private static final String DEXKIT_LIB = "dexkit";
     private static final String SILK_CODEC_SO = "libsilk_codec.so";
@@ -101,6 +102,12 @@ public class NativeLibraryLoader {
 
     private boolean loadLibrary(Context ctx, ClassLoader moduleClassLoader, String soName,
                                 String libName, boolean optional) {
+        return LOADED_LIBRARIES.load(moduleClassLoader, soName,
+                () -> loadLibraryUncached(ctx, moduleClassLoader, soName, libName, optional));
+    }
+
+    private boolean loadLibraryUncached(Context ctx, ClassLoader moduleClassLoader, String soName,
+                                        String libName, boolean optional) {
         String moduleApk = getModuleApkPath(moduleClassLoader);
         String abi = resolveAbi();
         String entryPath = "lib/" + abi + "/" + soName;

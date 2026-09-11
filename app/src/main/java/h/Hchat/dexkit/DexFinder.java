@@ -69,6 +69,7 @@ public class DexFinder {
     public List<Class<?>> packetBaseClasses = new ArrayList<>();
     public List<Class<?>> packetQueueClasses = new ArrayList<>();
     public List<Class<?>> fakePacketClasses = new ArrayList<>();
+    private Class<?> protobufBaseClass;
     public Class<?> protobufRawReqClass;
     public Class<?> protobufGenericRespClass;
     public Class<?> protobufConfigBuilderClass;
@@ -3406,6 +3407,7 @@ public class DexFinder {
             packetBaseClasses = loadClassList("packetBaseClasses");
             packetQueueClasses = loadClassList("packetQueueClasses");
             fakePacketClasses = loadClassList("fakePacketClasses");
+            protobufBaseClass = loadClass("protobufBaseClass");
             protobufRawReqClass = loadClass("protobufRawReqClass");
             protobufGenericRespClass = loadClass("protobufGenericRespClass");
             protobufConfigBuilderClass = loadClass("protobufConfigBuilderClass");
@@ -4623,6 +4625,7 @@ public class DexFinder {
             editor.putString("packetBaseClasses", joinClassNames(packetBaseClasses));
             editor.putString("packetQueueClasses", joinClassNames(packetQueueClasses));
             editor.putString("fakePacketClasses", joinClassNames(fakePacketClasses));
+            putClass(editor, "protobufBaseClass", protobufBaseClass);
             putClass(editor, "protobufRawReqClass", protobufRawReqClass);
             putClass(editor, "protobufGenericRespClass", protobufGenericRespClass);
             putClass(editor, "protobufConfigBuilderClass", protobufConfigBuilderClass);
@@ -5246,7 +5249,8 @@ public class DexFinder {
     // ============ Protobuf 通用抓包/发包 ============
     private void resolveProtobufPacketApi() {
         try {
-            Class<?> protoBase = findProtobufBaseClass();
+            if (protobufBaseClass == null) protobufBaseClass = findProtobufBaseClass();
+            Class<?> protoBase = protobufBaseClass;
             if (protoBase == null) return;
             if (protobufRawReqClass == null) protobufRawReqClass = findRawReqClass();
             if (protobufNewSendMsgReqClass == null) protobufNewSendMsgReqClass = findNewSendMsgReqClass(protoBase);
