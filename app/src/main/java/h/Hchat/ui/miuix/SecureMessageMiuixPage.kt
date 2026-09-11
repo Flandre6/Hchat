@@ -27,9 +27,8 @@ internal fun SecureMessageMiuixPage(
 ) {
     val prefsName = if (provider.featureId() == SecureMessageSettings.ANTI_ID)
         SecureMessageSettings.ANTI_PREFS else SecureMessageSettings.SEND_PREFS
-    val defaultEnabled = provider.featureId() != SecureMessageSettings.ANTI_ID
     val sp = remember { HchatStorage.preferences(context, prefsName) }
-    var enabled by remember { mutableStateOf(sp.getBoolean(SecureMessageSettings.KEY_ENABLE, defaultEnabled)) }
+    var enabled by remember { mutableStateOf(sp.getBoolean(SecureMessageSettings.KEY_ENABLE, SecureMessageSettings.DEFAULT_ENABLE)) }
     val listState = rememberLazyListState()
     val scrollBehavior = MiuixScrollBehavior()
     PageScaffold(
