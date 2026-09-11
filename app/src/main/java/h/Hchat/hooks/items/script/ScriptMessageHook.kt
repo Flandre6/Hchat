@@ -1,5 +1,6 @@
 package h.Hchat.hooks.items.script
 
+import android.os.SystemClock
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.core.FeatureContext
 import h.Hchat.hooks.items.shortvideo.FinderMediaDownloadSupport
@@ -7,26 +8,36 @@ import h.Hchat.utils.HLog
 import java.util.Locale
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 object ScriptMessageHook {
     private const val DEDUP_WINDOW_MS = 1000L
     private const val STABLE_ID_DEDUP_WINDOW_MS = 60_000L
     private const val MEDIA_MESSAGE_WAIT_MS = 15_000L
     private const val MEDIA_MESSAGE_RETRY_MS = 250L
+    private const val MESSAGE_DISPATCH_QUEUE_CAPACITY = 128
+    private const val OVERFLOW_LOG_INTERVAL_MS = 10_000L
     private const val MEDIA_DISPATCH_QUEUE_CAPACITY = 32
     private val USERNAME_REGEX = Regex("[a-z0-9_\\-.]{3,}")
     @Volatile
     private var installed = false
     private val recentMessages = ConcurrentHashMap<String, Long>()
-    private val dispatchExecutor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "HchatScriptMessage").apply {
-            isDaemon = true
-        }
-    }
+    private val droppedMessages = AtomicLong()
+    private val nextOverflowLogAtMs = AtomicLong()
+    private val dispatchExecutor = ThreadPoolExecutor(
+        1,
+        1,
+        0L,
+        TimeUnit.MILLISECONDS,
+        ArrayBlockingQueue(MESSAGE_DISPATCH_QUEUE_CAPACITY),
+        { runnable ->
+            Thread(runnable, "HchatScriptMessage").apply { isDaemon = true }
+        },
+        ThreadPoolExecutor.AbortPolicy()
+    )
     private val mediaDispatchExecutor = ThreadPoolExecutor(
         2,
         2,
@@ -52,20 +63,30 @@ object ScriptMessageHook {
         }
         if (!changeApi.isInstalled) return false
         changeApi.subscribe { change ->
+            val handleMessage = ScriptPluginRuntime.hasHandleMsgCallbacks()
+            val imageCallback = ScriptPluginRuntime.hasImageDownloadCallback()
+            val videoCallback = ScriptPluginRuntime.hasVideoDownloadCallback()
+            val finderCallback = ScriptPluginRuntime.hasFinderMediaDownloadCallback()
+            if (!handleMessage && !imageCallback && !videoCallback && !finderCallback) return@subscribe
             val message = change.message ?: return@subscribe
             val scriptMessage = ScriptMessageBean(message)
-            val image = ScriptPluginRuntime.hasImageDownloadCallback() && scriptMessage.isImage()
-            val video = ScriptPluginRuntime.hasVideoDownloadCallback() && scriptMessage.isVideo()
-            val finder = ScriptPluginRuntime.hasFinderMediaDownloadCallback() &&
-                scriptMessage.isVideoNumberVideo()
+            val image = imageCallback && scriptMessage.isImage()
+            val video = videoCallback && scriptMessage.isVideo()
+            val finder = finderCallback && scriptMessage.isVideoNumberVideo()
             dispatchMedia(scriptMessage, image, video, finder)
-            dispatchMessageDedup(scriptMessage)
+            if (handleMessage) dispatchMessageDedup(scriptMessage)
         }
         installed = true
         return true
     }
 
+    fun clearPendingMessages() {
+        dispatchExecutor.queue.clear()
+        recentMessages.clear()
+    }
+
     private fun dispatchMessageDedup(message: ScriptMessageBean) {
+        if (!ScriptPluginRuntime.hasHandleMsgCallbacks()) return
         val now = System.currentTimeMillis()
         cleanup(now)
         val keys = dedupKeys(message)
@@ -75,12 +96,25 @@ object ScriptMessageHook {
             }) {
             return
         }
+        val dispatch = ScriptPluginRuntime.captureHandleMsgDispatch(message) ?: return
         keys.forEach { key -> recentMessages[key] = now }
-        dispatchExecutor.execute {
-            try {
-                ScriptPluginRuntime.dispatchOnHandleMsg(message)
-            } catch (t: Throwable) {
-                HLog.e("[Hchat:Script] 消息监听异步分发失败: ${t.message}", t)
+        try {
+            dispatchExecutor.execute {
+                if (!ScriptPluginRuntime.hasHandleMsgCallbacks()) return@execute
+                try {
+                    dispatch.run()
+                } catch (t: Throwable) {
+                    HLog.e("[Hchat:Script] 消息监听异步分发失败: ${t.message}", t)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            val dropped = droppedMessages.incrementAndGet()
+            val nowMs = SystemClock.elapsedRealtime()
+            val nextLogAtMs = nextOverflowLogAtMs.get()
+            if (nowMs >= nextLogAtMs &&
+                nextOverflowLogAtMs.compareAndSet(nextLogAtMs, nowMs + OVERFLOW_LOG_INTERVAL_MS)
+            ) {
+                HLog.e("[Hchat:Script] 消息分发队列已满，累计丢弃 $dropped 个新事件")
             }
         }
     }

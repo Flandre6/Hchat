@@ -111,7 +111,9 @@ class WeChatTabletFeature : BaseFeature() {
                 if (padHookedLoaders.contains(key)) return
                 HookRegistry.get().hook(method, object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        param.result = !Throwable().stackTraceToString().contains(CHAT_VOICE_STACK)
+                        param.result = Throwable().stackTrace.none {
+                            it.className.contains(CHAT_VOICE_STACK)
+                        }
                     }
                 })
                 padHookedLoaders.add(key)

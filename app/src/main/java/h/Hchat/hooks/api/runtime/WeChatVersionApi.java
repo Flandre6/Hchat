@@ -117,18 +117,17 @@ public final class WeChatVersionApi {
         } catch (Throwable ignored) {}
 
         String loaderText = String.valueOf(loader);
-        String clientVersion = firstNonEmpty(
-                readBuildConfigClientVersion(loader),
-                match(CLIENT_VER_PATTERN, loaderText),
-                readTinkerValue(context, "patch.client.ver"),
-                readTinkerValue(context, "client.ver"));
-        String tinkerId = firstNonEmpty(
-                match(TINKER_ID_PATTERN, loaderText),
-                readTinkerValue(context, "NEW_TINKER_ID"),
-                readTinkerValue(context, "TINKER_ID"));
-        String patchId = firstNonEmpty(
-                match(PATCH_ID_PATTERN, loaderText),
-                readPatchDirectoryName(context));
+        // Evaluate fallbacks only when needed; eager varargs scanned Tinker
+        // files even when the running loader already supplied the metadata.
+        String clientVersion = readBuildConfigClientVersion(loader);
+        if (TextUtils.isEmpty(clientVersion)) clientVersion = match(CLIENT_VER_PATTERN, loaderText);
+        if (TextUtils.isEmpty(clientVersion)) clientVersion = readTinkerValue(context, "patch.client.ver");
+        if (TextUtils.isEmpty(clientVersion)) clientVersion = readTinkerValue(context, "client.ver");
+        String tinkerId = match(TINKER_ID_PATTERN, loaderText);
+        if (TextUtils.isEmpty(tinkerId)) tinkerId = readTinkerValue(context, "NEW_TINKER_ID");
+        if (TextUtils.isEmpty(tinkerId)) tinkerId = readTinkerValue(context, "TINKER_ID");
+        String patchId = match(PATCH_ID_PATTERN, loaderText);
+        if (TextUtils.isEmpty(patchId)) patchId = readPatchDirectoryName(context);
         String classLoaderHash = loaderHash(loader);
 
         String cacheKey = buildCacheKey(packageName, versionName, versionCode,
@@ -257,12 +256,10 @@ public final class WeChatVersionApi {
         if (loader == null) return "";
         try {
             Class<?> clazz = Class.forName("com.tencent.mm.boot.BuildConfig", false, loader);
-            String value = firstNonEmpty(
-                    readStaticField(clazz, "CLIENT_VERSION_ARM64"),
-                    readStaticField(clazz, "CLIENT_VERSION"),
-                    readStaticField(clazz, "CLIENT_VERSION_INT"),
-                    readStaticField(clazz, "CLIENTVERSION")
-            );
+            String value = readStaticField(clazz, "CLIENT_VERSION_ARM64");
+            if (TextUtils.isEmpty(value)) value = readStaticField(clazz, "CLIENT_VERSION");
+            if (TextUtils.isEmpty(value)) value = readStaticField(clazz, "CLIENT_VERSION_INT");
+            if (TextUtils.isEmpty(value)) value = readStaticField(clazz, "CLIENTVERSION");
             return value != null ? value.trim() : "";
         } catch (Throwable ignored) {
             return "";
@@ -279,14 +276,6 @@ public final class WeChatVersionApi {
         } catch (Throwable ignored) {
             return "";
         }
-    }
-
-    private static String firstNonEmpty(String... values) {
-        if (values == null) return "";
-        for (String value : values) {
-            if (!TextUtils.isEmpty(value)) return value;
-        }
-        return "";
     }
 
     private static boolean shouldRefresh(WeChatVersionInfo info) {

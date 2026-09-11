@@ -115,7 +115,6 @@ public final class WeChatChatroomChangeApi {
 
     private void onDatabaseChanged(DatabaseChange change) {
         if (change == null || !"chatroom".equalsIgnoreCase(change.table)) return;
-        if (listeners.isEmpty()) return;
         WeChatChatroom chatroom = resolveChatroom(change);
         ChatroomChange event = new ChatroomChange(change, chatroom);
         for (Listener listener : listeners) {

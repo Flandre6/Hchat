@@ -72,6 +72,7 @@ import h.Hchat.hooks.items.quickread.QuickMarkReadFeature
 import h.Hchat.hooks.items.quickterminate.QuickTerminateFeature
 import h.Hchat.hooks.items.realtail.RealNameTailFeature
 import h.Hchat.hooks.items.roundavatar.RoundAvatarFeature
+import h.Hchat.hooks.items.specialmessage.SpecialMessageFeature
 import h.Hchat.hooks.items.script.ScriptPluginFeature
 import h.Hchat.hooks.items.scheduledtask.ScheduledTaskFeature
 import h.Hchat.hooks.items.selectedmessages.SelectedMessagesFeature
@@ -99,6 +100,7 @@ object FeatureRegistry {
         return FeatureManager()
             .register(SettingsFeature())
             .register(WechatApiFeature())
+            .register(SpecialMessageFeature())
             .register(FloatingShortcutFeature())
             .register(CustomBottomBarFeature())
             .register(RoundAvatarFeature())
