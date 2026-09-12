@@ -21,7 +21,7 @@ const compiler = [
     artifact('org.jetbrains', 'annotations', '13.0')
 ];
 const root = path.resolve(__dirname, '..');
-const output = fs.mkdtempSync(path.join(os.tmpdir(), 'hchat-special-message-tests-'));
+const output = fs.mkdtempSync(path.join(os.tmpdir(), 'hchat-secure-message-tests-'));
 const jar = path.join(output, 'tests.jar');
 const java = process.env.JAVA || 'java';
 function run(args) {
@@ -33,12 +33,8 @@ function run(args) {
 run(['-Xmx256m', '-cp', compiler.join(path.delimiter),
     'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-no-stdlib', '-no-reflect',
     '-classpath', stdlib, '-d', jar,
-    'app/src/main/java/h/Hchat/hooks/items/specialmessage/SafetyMessageHostProfile.kt',
     'app/src/main/java/h/Hchat/hooks/items/securemessage/SecureEmojiHostProfile.kt',
-    'scripts/tests/safety_message/SafetyMessageCompatRegression.kt',
     'scripts/tests/safety_message/SecureEmojiHostProfileRegression.kt']);
-run(['-cp', [jar, stdlib].join(path.delimiter),
-    'h.Hchat.hooks.items.specialmessage.SafetyMessageCompatRegressionKt']);
 run(['-cp', [jar, stdlib].join(path.delimiter),
     'h.Hchat.hooks.items.securemessage.SecureEmojiHostProfileRegressionKt']);
 console.log('Test artifacts: ' + output);
