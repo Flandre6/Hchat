@@ -19,8 +19,12 @@ import java.lang.reflect.Modifier
 class SendSecureMessageFeature : BaseFeature() {
     @Volatile private var installed = false
     @Volatile private var mergeInstalled = false
+    @Volatile private var emojiSourceInstalled = false
+    @Volatile private var emojiDispatchInstalled = false
     private var prefs: android.content.SharedPreferences? = null
     private lateinit var methodPrefs: android.content.SharedPreferences
+    private var emojiProfile: SecureEmojiHostProfile? = null
+    private var hostVersion = ""
     @Volatile private var markerLogged = false
     @Volatile private var markerFailureLogged = false
     @Volatile private var hookMissLogged = false
@@ -35,6 +39,19 @@ class SendSecureMessageFeature : BaseFeature() {
     override fun onFeatureInstall(context: FeatureContext) {
         prefs = HchatStorage.preferences(context.hostContext(), SecureMessageSettings.SEND_PREFS)
         methodPrefs = DexMethodCache.prefs(context.hostContext(), "Hchat_secure_message_method_cache")
+        val host = context.hostContext()
+        val version = host.packageManager.getPackageInfo(host.packageName, 0)
+        val versionCode = if (android.os.Build.VERSION.SDK_INT >= 28) {
+            version.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            version.versionCode.toLong()
+        }
+        hostVersion = "${version.versionName} ($versionCode)"
+        emojiProfile = SecureEmojiHostProfile.forVersion(version.versionName, versionCode)
+        if (emojiProfile == null) {
+            logInfo("微信 $hostVersion 未配置表情请求直达 Hook，继续使用通用安全消息链路")
+        }
         logInfo("安全消息功能已初始化，等待 DexKit")
         schedule(context)
         subscribe(Events.DexReady::class.java) { schedule(context) }
@@ -46,7 +63,8 @@ class SendSecureMessageFeature : BaseFeature() {
 
     @Synchronized
     private fun installHook(context: FeatureContext): Boolean {
-        if (installed && mergeInstalled) return true
+        if (installed && mergeInstalled && emojiHooksReady()) return true
+        val emojiReady = installEmojiHooks(context)
         val runtimeKey = methodCacheKey(context)
         if (runtimeKey.isBlank()) {
             logError("安全消息安装跳过：微信运行时版本信息未就绪", null)
@@ -86,7 +104,101 @@ class SendSecureMessageFeature : BaseFeature() {
             false
         }
         val mergeReady = if (mergeInstalled) true else installSourceMergeHooks(insert)
-        return insertReady && mergeReady
+        return insertReady && mergeReady && emojiReady
+    }
+
+    private fun installEmojiHooks(context: FeatureContext): Boolean {
+        val profile = emojiProfile ?: return true
+        val sourceReady = emojiSourceInstalled || installEmojiSourceHook(context, profile)
+        val dispatchReady = emojiDispatchInstalled || installEmojiDispatchHook(context, profile)
+        return sourceReady && dispatchReady
+    }
+
+    private fun emojiHooksReady(): Boolean = emojiProfile == null ||
+        (emojiSourceInstalled && emojiDispatchInstalled)
+
+    /** Adds the marker to the MsgSource returned to the emoji upload path. */
+    private fun installEmojiSourceHook(
+        context: FeatureContext,
+        profile: SecureEmojiHostProfile
+    ): Boolean = runCatching {
+        val loader = context.hostClassLoader()
+        val messageClass = findHostClass("com.tencent.mm.storage.e9", loader)
+        val target = findHostMethod(
+            findHostClass(profile.sourceOwner, loader),
+            "a",
+            messageClass
+        )
+        check(target.returnType == String::class.java) {
+            "表情 MsgSource 返回类型不匹配: ${target.toGenericString()}"
+        }
+        HookRegistry.get().hook(target, object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                if (param.hasThrowable() || !enabled()) return
+                val message = param.args?.getOrNull(0) ?: return
+                try {
+                    val type = readNumber(message, "field_type", "type", "getType", "getMsgType")
+                        ?.toInt() ?: return
+                    if (WeChatMessageTypes.normalize(type) != WeChatMessageTypes.EMOJI) return
+                    param.result = SecureMessageSource.addMarker(param.result as? String)
+                } catch (error: Throwable) {
+                    logError("微信 $hostVersion 表情安全节点注入失败: ${target.toGenericString()}", error)
+                }
+            }
+        })
+        emojiSourceInstalled = true
+        logInfo("表情安全消息 MsgSource Hook 已安装: ${target.toGenericString()}")
+        true
+    }.getOrElse {
+        logError("微信 $hostVersion 表情 MsgSource 链路安装失败", it)
+        false
+    }
+
+    /** Writes MsgSource again immediately before sendemoji dispatch (8.0.77 cmdId 175). */
+    private fun installEmojiDispatchHook(
+        context: FeatureContext,
+        profile: SecureEmojiHostProfile
+    ): Boolean = runCatching {
+        val loader = context.hostClassLoader()
+        val scene = findHostClass(profile.emojiScene, loader)
+        val dispatch = findHostMethod(
+            scene,
+            "doScene",
+            findHostClass("com.tencent.mm.network.s", loader),
+            findHostClass("com.tencent.mm.modelbase.u0", loader)
+        )
+        check(dispatch.returnType == Int::class.javaPrimitiveType) {
+            "表情请求分发返回类型不匹配: ${dispatch.toGenericString()}"
+        }
+        val requestEnvelope = findHostField(scene, "d").type
+        val requestWrapper = findHostField(requestEnvelope, "a").type
+        findHostField(requestWrapper, "a")
+        HookRegistry.get().hook(dispatch, object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                if (!enabled()) return
+                try {
+                    val request = readHostField(param.thisObject, "d") ?: return
+                    val wrapper = readHostField(request, "a") ?: return
+                    val list = readHostField(wrapper, "a") ?: return
+                    val items = readHostField(list, "e") as? java.util.LinkedList<*> ?: return
+                    val item = items.firstOrNull() ?: return
+                    val sourceField = findHostField(item.javaClass, "p")
+                    sourceField.isAccessible = true
+                    sourceField.set(
+                        item,
+                        SecureMessageSource.addMarker(sourceField.get(item) as? String)
+                    )
+                } catch (error: Throwable) {
+                    logError("微信 $hostVersion 表情请求安全节点注入失败: ${dispatch.toGenericString()}", error)
+                }
+            }
+        })
+        emojiDispatchInstalled = true
+        logInfo("表情安全消息请求分发 Hook 已安装: ${dispatch.toGenericString()}")
+        true
+    }.getOrElse {
+        logError("微信 $hostVersion 表情请求分发链路安装失败", it)
+        false
     }
 
     /**
@@ -190,6 +302,29 @@ class SendSecureMessageFeature : BaseFeature() {
             if (value is Number) return value
         }
         return null
+    }
+
+    private fun findHostClass(name: String, loader: ClassLoader): Class<*> =
+        requireNotNull(KavaReflector.loadClass(name, loader)) { "未找到宿主类 $name" }
+
+    private fun findHostMethod(
+        owner: Class<*>,
+        name: String,
+        vararg types: Class<*>
+    ): Method = requireNotNull(KavaReflector.findMethodRecursive(owner, name, *types)) {
+        "未找到宿主方法 ${owner.name}.$name"
+    }
+
+    private fun findHostField(owner: Class<*>, name: String): java.lang.reflect.Field =
+        requireNotNull(KavaReflector.findFieldRecursive(owner, name)) {
+            "未找到宿主字段 ${owner.name}.$name"
+        }
+
+    private fun readHostField(receiver: Any?, name: String): Any? {
+        requireNotNull(receiver) { "读取宿主字段 $name 时对象为空" }
+        val field = findHostField(receiver.javaClass, name)
+        field.isAccessible = true
+        return field.get(receiver)
     }
 
     private fun isInsertMethod(method: Method): Boolean {
