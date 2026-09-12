@@ -13,6 +13,8 @@ import java.util.ArrayDeque
 
 /** 迁移特殊消息插件的 sec_msg_node，使用原生消息发送链路。 */
 class SpecialMessageFeature : BaseFeature() {
+    private var hostProfile: SafetyMessageHostProfile? = null
+    private var hostVersion = ""
     private val hooks = mutableListOf<XC_MethodHook.Unhook>()
     @Volatile private var textInstalled = false
     private var emojiInstalled = false
@@ -30,8 +32,11 @@ class SpecialMessageFeature : BaseFeature() {
         // 仅启用已用宿主 APK 交叉确认的版本，避免混淆类碰撞。
         val host = context.hostContext()
         val version = host.packageManager.getPackageInfo(host.packageName, 0)
-        if (version.versionName != "8.0.76" || version.versionCode != 3140) {
-            logError("当前适配仅确认微信 8.0.76 (3140)，实际为 "+version.versionName+" ("+version.versionCode+")，未安装特殊消息 Hook", null)
+        val versionCode = if (android.os.Build.VERSION.SDK_INT >= 28) version.longVersionCode else version.versionCode.toLong()
+        hostVersion = "${version.versionName} ($versionCode)"
+        hostProfile = SafetyMessageHostProfile.forVersion(version.versionName, versionCode)
+        if (hostProfile == null) {
+            logError("安全消息未适配微信 $hostVersion，未安装 Hook", null)
             return
         }
         val sp = HchatStorage.preferences(host, PREFS)
@@ -75,18 +80,24 @@ class SpecialMessageFeature : BaseFeature() {
         DexInstallScheduler.schedule(ID, name()) { installHooks(context) }
     }
     @Synchronized private fun installHooks(context: FeatureContext): Boolean {
+        val profile = hostProfile ?: return false
         val sp = HchatStorage.preferences(context.hostContext(), PREFS)
         if (!textInstalled) {
-            // 插件验证的当前版本消息结构；其他版本未匹配时不猜测字段。
+            // 只解析版本配置指定的入口，不遍历可能碰撞的混淆类候选。
             val targets = runCatching {
                 val loader = context.hostClassLoader()
-                listOf(HostReflection.method(HostReflection.findClass("lq1.u0", loader),
-                    "r",
-                    HostReflection.findClass("a65.en4", loader),
-                    HostReflection.findClass("com.tencent.mm.storage.e9", loader)
+                val messageClass = HostReflection.findClass("com.tencent.mm.storage.e9", loader)
+                check(HostReflection.method(messageClass, profile.talkerGetter).returnType == String::class.java)
+                check(HostReflection.method(messageClass, "j").returnType == String::class.java)
+                check(HostReflection.method(messageClass, "s3", String::class.java).returnType == Void.TYPE)
+                check(HostReflection.findField(messageClass, "G").type == String::class.java)
+                listOf(HostReflection.method(HostReflection.findClass(profile.textOwner, loader),
+                    profile.textMethod,
+                    HostReflection.findClass(profile.textRequest, loader),
+                    messageClass
                 )).filter { it.returnType == Void.TYPE }
             }.getOrElse {
-                logError("8.0.76 (3140) 定位 lq1.u0.r(en4,e9) 失败", it)
+                logError("微信 $hostVersion 定位 ${profile.textOwner}.${profile.textMethod} 失败", it)
                 emptyList()
             }
             if (targets.isNotEmpty()) {
@@ -104,7 +115,7 @@ class SpecialMessageFeature : BaseFeature() {
                                 // 脚本桥的第三个参数 0 是参数个数，不是传给微信方法的实参。
                                 // 按正文和会话精确匹配；同一消息的重复发送按登记顺序消费。
                                 val content = HostReflection.callMethod(message, "j")?.toString().orEmpty()
-                                val talker = HostReflection.callMethod(message, "N0")?.toString().orEmpty()
+                                val talker = HostReflection.callMethod(message, profile.talkerGetter)?.toString().orEmpty()
                                 if (content != candidate.text || talker != candidate.talker || now >= candidate.expireAt) return
                                 if (!isAllowedTalker(sp, talker) ||
                                     !sp.getBoolean(if (candidate.link) "link" else "enabled", false)) return
@@ -117,7 +128,7 @@ class SpecialMessageFeature : BaseFeature() {
                                 synchronized(pending) {
                                     if (pending.peekFirst() === candidate) pending.removeFirst()
                                 }
-                            } catch (error: Throwable) { logError("安全消息节点注入失败", error) }
+                            } catch (error: Throwable) { logError("微信 $hostVersion 安全消息节点注入失败: $target", error) }
                         }
                     })
                 }
@@ -130,8 +141,9 @@ class SpecialMessageFeature : BaseFeature() {
         return textInstalled && emojiInstalled && emojiDispatchInstalled
     }
     private fun installMediaHook(context: FeatureContext): Boolean = runCatching {
+        val profile = checkNotNull(hostProfile)
         val loader = context.hostClassLoader()
-        val target = HostReflection.method(HostReflection.findClass("lq1.d1", loader),
+        val target = HostReflection.method(HostReflection.findClass(profile.sourceOwner, loader),
             "a", HostReflection.findClass("com.tencent.mm.storage.e9", loader)
         )
         check(target.returnType == String::class.java)
@@ -144,29 +156,34 @@ class SpecialMessageFeature : BaseFeature() {
                 try {
                     if ((HostReflection.callMethod(message, "getType") as? Number)?.toInt() !=
                         47) return
-                    val talker = HostReflection.callMethod(message, "N0")?.toString().orEmpty()
+                    val talker = HostReflection.callMethod(message, profile.talkerGetter)?.toString().orEmpty()
                     if (!isAllowedTalker(sp, talker)) return
                     // 表情直接消费本方法返回的 MsgSource。
                     val source = param.result as? String ?: ""
                     val updated = appendNode(source, false)
                     param.result = updated
-                } catch (error: Throwable) { logError("媒体安全节点注入失败", error) }
+                } catch (error: Throwable) { logError("微信 $hostVersion 表情安全节点注入失败: $target", error) }
             }
         })
         true
     }.getOrElse {
-        logError("媒体安全链路未就绪", it)
+        logError("微信 $hostVersion 表情安全链路未就绪", it)
         false
     }
 
     /** 在表情请求进入网络分发前再写一次 MsgSource，覆盖后续上传阶段重建请求的情况。 */
     private fun installEmojiDispatchHook(context: FeatureContext): Boolean = runCatching {
+        val profile = checkNotNull(hostProfile)
         val loader = context.hostClassLoader()
-        val scene = HostReflection.findClass("o22.y", loader)
+        val scene = HostReflection.findClass(profile.emojiScene, loader)
         val dispatch = HostReflection.method(scene, "doScene",
             HostReflection.findClass("com.tencent.mm.network.s", loader),
             HostReflection.findClass("com.tencent.mm.modelbase.u0", loader))
         check(dispatch.returnType == Int::class.javaPrimitiveType)
+        check(HostReflection.findField(scene, "m").type == String::class.java)
+        val envelope = HostReflection.findField(scene, "d").type
+        val wrapper = HostReflection.findField(envelope, "a").type
+        HostReflection.findField(wrapper, "a")
         val sp = HchatStorage.preferences(context.hostContext(), PREFS)
         hooks += de.robv.android.xposed.XposedBridge.hookMethod(dispatch, object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
@@ -182,11 +199,11 @@ class SpecialMessageFeature : BaseFeature() {
                     val field = HostReflection.findField(item.javaClass, "p")
                     field.isAccessible = true
                     field.set(item, appendNode(field.get(item)?.toString().orEmpty(), false))
-                } catch (error: Throwable) { logError("表情请求安全节点注入失败", error) }
+                } catch (error: Throwable) { logError("微信 $hostVersion 表情请求安全节点注入失败: $dispatch", error) }
             }
         })
         true
-    }.getOrElse { logError("表情请求分发链路未就绪", it); false }
+    }.getOrElse { logError("微信 $hostVersion 表情请求分发链路未就绪", it); false }
 
     override fun onFeatureDestroy(context: FeatureContext) {
         sendSubscription?.unsubscribe()
@@ -197,6 +214,7 @@ class SpecialMessageFeature : BaseFeature() {
         textInstalled = false
         emojiInstalled = false
         emojiDispatchInstalled = false
+        hostProfile = null
     }
     private data class PendingSafety(
         val text: String,
